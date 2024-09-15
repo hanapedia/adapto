@@ -18,7 +18,7 @@ type Config struct {
 }
 
 func (c Config) Validate() error {
-	if c.Threshold >= 1 {
+	if c.Threshold >= 1 || c.Threshold < 0 {
 		return errors.New("Cannot set threshold greater than 1.")
 	}
 	if c.IncBy <= 1 {

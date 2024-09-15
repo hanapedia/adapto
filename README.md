@@ -1,7 +1,7 @@
 adapto
 =========
 
-[![GoDoc](https://godoc.org/github.com/hanapedia/adapto?status.svg)](https://godoc.org/github.com/hanapedia/adapto)
+<!-- [![GoDoc](https://godoc.org/github.com/hanapedia/adapto?status.svg)](https://godoc.org/github.com/hanapedia/adapto) -->
 
 [adapto][repo-url] implements the adaptive timeout in Go.
 With adapto, timeout values are dynamically adjusted similar to how additive-increase/multiplicative-decrease (AIMD) algorithm is used in TCP for congestion control.

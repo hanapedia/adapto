@@ -15,6 +15,8 @@ type Config struct {
 	IncBy          float32
 	DecBy          time.Duration
 	MinimumCount   uint32
+	Min            time.Duration
+	Max            time.Duration
 }
 
 func (c Config) Validate() error {
@@ -52,6 +54,9 @@ func GetTimeout(config Config) (timeoutDuration time.Duration, didDeadlineExceed
 			threshold:       config.Threshold,
 			incBy:           config.IncBy,
 			decBy:           config.DecBy,
+			minimumCount:    config.MinimumCount,
+			min:             config.Min,
+			max:             config.Max,
 		}
 		AdaptoProviders[config.Id] = provider
 	}
@@ -107,6 +112,8 @@ type AdaptoProvider struct {
 	incBy        float32
 	decBy        time.Duration
 	minimumCount uint32
+	min          time.Duration
+	max          time.Duration
 }
 
 func (ap *AdaptoProvider) NewTimeout() (timeoutDuration time.Duration, didDeadlineExceed chan<- bool) {
@@ -147,8 +154,11 @@ func (ap *AdaptoProvider) NewTimeout() (timeoutDuration time.Duration, didDeadli
 // inc conditionally, multiplicatively increments atomic duration used for new timeouts
 func (ap *AdaptoProvider) inc() {
 	if ap.threshold == 0 || (ap.counts.Total() > ap.minimumCount && ap.counts.Ratio() >= ap.threshold) {
-		curr_duration := ap.currentDuration.Load()
-		newDuration := time.Duration(float32(curr_duration) * ap.incBy)
+		currDuration := ap.currentDuration.Load()
+		newDuration := time.Duration(float32(currDuration) * ap.incBy)
+		if newDuration > ap.max {
+			newDuration = ap.max
+		}
 		ap.currentDuration.Store(newDuration)
 	}
 }
@@ -156,6 +166,11 @@ func (ap *AdaptoProvider) inc() {
 // dec conditionally, additively decrements atomic duration used for new timeouts
 func (ap *AdaptoProvider) dec() {
 	if ap.threshold == 0 || (ap.counts.Total() > ap.minimumCount && ap.counts.Ratio() < ap.threshold) {
-		ap.currentDuration.Sub(ap.decBy)
+		currDuration := ap.currentDuration.Load()
+		newDuration := currDuration - ap.decBy
+		if newDuration < ap.min {
+			newDuration = ap.min
+		}
+		ap.currentDuration.Store(newDuration)
 	}
 }

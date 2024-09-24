@@ -26,6 +26,9 @@ func (c Config) Validate() error {
 	if c.IncBy <= 1 {
 		return errors.New("Cannot set IncBy less than or equal to 1.")
 	}
+	if c.Min <= 0 {
+		return errors.New("Cannot set Min less than or equal to 0.")
+	}
 	return nil
 }
 
@@ -42,6 +45,10 @@ func GetTimeout(config Config) (timeoutDuration time.Duration, didDeadlineExceed
 	}
 	provider, ok := AdaptoProviders[config.Id]
 	if !ok {
+		max := config.Max
+		if max == 0 {
+			max = config.InitialTimeout
+		}
 		provider = &AdaptoProvider{
 			counts: Counts{
 				total:            *atomic.NewUint32(0),
@@ -56,7 +63,7 @@ func GetTimeout(config Config) (timeoutDuration time.Duration, didDeadlineExceed
 			decBy:           config.DecBy,
 			minimumCount:    config.MinimumCount,
 			min:             config.Min,
-			max:             config.Max,
+			max:             max,
 		}
 		AdaptoProviders[config.Id] = provider
 	}
@@ -117,60 +124,88 @@ type AdaptoProvider struct {
 }
 
 func (ap *AdaptoProvider) NewTimeout() (timeoutDuration time.Duration, didDeadlineExceed chan<- bool) {
+	// reset counters if interval is expired
+	now := time.Now()
+	if ap.expiry.Load().Before(now) {
+		ap.counts.clear()
+		ap.expiry.Store(now.Add(ap.interval))
+	}
+
 	timeoutDuration = ap.currentDuration.Load()
+	ap.counts.onNew()
+
 	deadlineCh := make(chan bool)
 	go func() {
 		// timer for cleaning self up when there is no signal from deadline channel
-		timer := time.NewTimer(timeoutDuration * 10)
+		// defaults to generated timeoutDuration * 2
+		timer := time.NewTimer(timeoutDuration * 2)
 		select {
 		case isDeadlineExceeded := <-deadlineCh:
 			timer.Stop()
-			now := time.Now()
-			if ap.expiry.Load().Before(now) {
-				ap.counts.clear()
-				ap.expiry.Store(now.Add(ap.interval))
-			}
 			if isDeadlineExceeded {
 				ap.counts.onDeadlineExceeded()
-				ap.inc()
+				ap.inc(timeoutDuration)
 			} else {
-				ap.dec()
+				ap.dec(timeoutDuration)
 			}
 		case <-timer.C:
 			timer.Stop()
-			now := time.Now()
-			if ap.expiry.Load().Before(now) {
-				ap.counts.clear()
-				ap.expiry.Store(now.Add(ap.interval))
-			}
 			ap.counts.onDeadlineExceeded()
-			ap.inc()
+			ap.inc(timeoutDuration)
 		}
 	}()
-	ap.counts.onNew()
 	return timeoutDuration, deadlineCh
 }
 
 // inc conditionally, multiplicatively increments atomic duration used for new timeouts
-func (ap *AdaptoProvider) inc() {
-	if ap.threshold == 0 || (ap.counts.Total() > ap.minimumCount && ap.counts.Ratio() >= ap.threshold) {
-		currDuration := ap.currentDuration.Load()
-		newDuration := time.Duration(float32(currDuration) * ap.incBy)
-		if newDuration > ap.max {
-			newDuration = ap.max
-		}
-		ap.currentDuration.Store(newDuration)
+// if current value is greater than or equal to new value generated using timedout duration, the current value is not changed
+// if current value is updated, interval is renewed with fresh counts
+func (ap *AdaptoProvider) inc(previousDuration time.Duration) {
+	if ap.counts.Total() < ap.minimumCount {
+		return
 	}
+	if !(ap.threshold == 0 || ap.counts.Ratio() >= ap.threshold) {
+		return
+	}
+	newDuration := time.Duration(float32(previousDuration) * ap.incBy)
+	if newDuration > ap.max {
+		newDuration = ap.max
+	}
+	// skip update if newDuration is not greater than current timedout duration
+	currentDuration := ap.currentDuration.Load()
+	if newDuration <= currentDuration {
+		return
+	}
+	ap.currentDuration.Store(newDuration)
+
+	// renew interval
+	now := time.Now()
+	ap.counts.clear()
+	ap.expiry.Store(now.Add(ap.interval))
 }
 
 // dec conditionally, additively decrements atomic duration used for new timeouts
-func (ap *AdaptoProvider) dec() {
-	if ap.threshold == 0 || (ap.counts.Total() > ap.minimumCount && ap.counts.Ratio() < ap.threshold) {
-		currDuration := ap.currentDuration.Load()
-		newDuration := currDuration - ap.decBy
-		if newDuration < ap.min {
-			newDuration = ap.min
-		}
-		ap.currentDuration.Store(newDuration)
+// if current value is smaller than or equal to new value generated using timedout duration, the current value is not changed
+func (ap *AdaptoProvider) dec(previousDuration time.Duration) {
+	if ap.counts.Total() < ap.minimumCount {
+		return
 	}
+	if !(ap.threshold == 0 || ap.counts.Ratio() < ap.threshold) {
+		return
+	}
+	newDuration := previousDuration - ap.decBy
+	if newDuration < ap.min {
+		newDuration = ap.min
+	}
+	// skip update if newDuration is not smaller than current timedout duration
+	currentDuration := ap.currentDuration.Load()
+	if newDuration >= currentDuration {
+		return
+	}
+	ap.currentDuration.Store(newDuration)
+
+	// renew interval
+	now := time.Now()
+	ap.counts.clear()
+	ap.expiry.Store(now.Add(ap.interval))
 }

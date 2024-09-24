@@ -14,9 +14,10 @@ func TestConfigValidation(t *testing.T) {
 		config   Config
 		hasError bool
 	}{
-		{Config{Threshold: 1.2, IncBy: 1.5}, true},  // Threshold too high
-		{Config{Threshold: 0.8, IncBy: 1}, true},    // IncBy less than or equal to 1
-		{Config{Threshold: 0.8, IncBy: 1.5}, false}, // Valid config
+		{Config{Threshold: 1.2, IncBy: 1.5}, true},                    // Threshold too high
+		{Config{Threshold: 0.8, IncBy: 1}, true},                      // IncBy less than or equal to 1
+		{Config{Threshold: 0.8, IncBy: 1.5, Min: 0}, true},            // Min less than or equal to 0
+		{Config{Threshold: 0.8, IncBy: 1.5, Min: time.Second}, false}, // Valid config
 	}
 
 	for _, test := range tests {
@@ -38,6 +39,7 @@ func TestGetTimeout(t *testing.T) {
 		Threshold:      0.5,
 		IncBy:          1.5,
 		DecBy:          500 * time.Millisecond,
+		Min:            time.Second,
 	}
 
 	timeoutDuration, didDeadlineExceed, err := GetTimeout(config)
@@ -51,6 +53,7 @@ func TestGetTimeout(t *testing.T) {
 	assert.True(t, ok, "AdaptoProvider should be created and stored")
 	assert.Equal(t, config.Id, provider.id, "Provider ID does not match")
 	assert.Equal(t, config.InitialTimeout, provider.currentDuration.Load(), "Initial timeout in provider does not match")
+	didDeadlineExceed <- false
 }
 
 // TestNewTimeout tests the NewTimeout method of AdaptoProvider.
@@ -115,10 +118,12 @@ func TestInc(t *testing.T) {
 		incBy:           config.IncBy,
 		decBy:           config.DecBy,
 		minimumCount:    config.MinimumCount,
+		min:             time.Millisecond,
+		max:             10 * time.Second,
 	}
 
 	// Test inc
-	provider.inc()
+	provider.inc(config.InitialTimeout)
 	expectedTimeout := time.Duration(float32(config.InitialTimeout) * config.IncBy)
 	assert.Equal(t, expectedTimeout, provider.currentDuration.Load(), "Timeout duration after inc should match")
 }
@@ -151,7 +156,7 @@ func TestDec(t *testing.T) {
 	}
 
 	// Test dec
-	provider.dec()
+	provider.dec(config.InitialTimeout)
 	expectedTimeout := config.InitialTimeout - config.DecBy
 	assert.Equal(t, expectedTimeout, provider.currentDuration.Load(), "Timeout duration after dec should match")
 }
@@ -168,6 +173,8 @@ func TestDynamicTimeoutAdjustmentNoTrheshold(t *testing.T) {
 		IncBy:          float32(incBy),   // Multiplicative increase factor
 		DecBy:          decBy,            // Additive decrease amount
 		MinimumCount:   0,                //Minimum number of generated timeouts to check the threshold
+		Min:            time.Millisecond,
+		Max:            30 * time.Second,
 	}
 
 	// Set up the provider & get initial timeout
@@ -209,7 +216,9 @@ func TestDynamicTimeoutAdjustmentWithTrheshold(t *testing.T) {
 		Threshold:      0.5,              // Threshold ratio for adjusting timeout
 		IncBy:          float32(incBy),   // Multiplicative increase factor
 		DecBy:          decBy,            // Additive decrease amount
-		MinimumCount:   1,                //Minimum number of generated timeouts to check the threshold
+		MinimumCount:   2,                //Minimum number of generated timeouts to check the threshold
+		Min:            time.Millisecond,
+		Max:            30 * time.Second,
 	}
 
 	// Set up the provider & get initial timeout
@@ -221,7 +230,8 @@ func TestDynamicTimeoutAdjustmentWithTrheshold(t *testing.T) {
 
 	// simulate first success attempt
 	didDeadlineExceed <- false
-	expected = expected - decBy
+	// should not update because total is less than minimumCount
+	/* expected = expected */
 	time.Sleep(50 * time.Millisecond)
 	timeoutDuration, didDeadlineExceed, err = GetTimeout(config)
 	assert.NoError(t, err, "Unexpected error from GetTimeout")
@@ -229,6 +239,8 @@ func TestDynamicTimeoutAdjustmentWithTrheshold(t *testing.T) {
 
 	// simulate first failed attempt
 	didDeadlineExceed <- true
+	// should be incremented because total is greater than minimumCount and ratio is 0.5
+	// counter will be reset
 	expected = time.Duration(float32(expected) * incBy)
 	time.Sleep(50 * time.Millisecond)
 	timeoutDuration, didDeadlineExceed, err = GetTimeout(config)
@@ -237,7 +249,8 @@ func TestDynamicTimeoutAdjustmentWithTrheshold(t *testing.T) {
 
 	// simulate second success attempt
 	didDeadlineExceed <- false
-	expected = expected - decBy
+	// should not be updated as total is lees than minimumCount
+	/* expected = expected */
 	time.Sleep(50 * time.Millisecond)
 	timeoutDuration, didDeadlineExceed, err = GetTimeout(config)
 	assert.NoError(t, err, "Unexpected error from GetTimeout")
@@ -245,6 +258,7 @@ func TestDynamicTimeoutAdjustmentWithTrheshold(t *testing.T) {
 
 	// simulate third success attempt
 	didDeadlineExceed <- false
+	// should be decremented as total is greater than minimumCount and ratio is less than threshold
 	expected = expected - decBy
 	time.Sleep(50 * time.Millisecond)
 	timeoutDuration, didDeadlineExceed, err = GetTimeout(config)
@@ -253,8 +267,17 @@ func TestDynamicTimeoutAdjustmentWithTrheshold(t *testing.T) {
 
 	// simulate second failed attempt
 	didDeadlineExceed <- true
-	// should not update the timeout because it is smaller than the threshold
+	// should not update as total is less than minimumcount
 	/* expected = expected */
+	time.Sleep(50 * time.Millisecond)
+	timeoutDuration, didDeadlineExceed, err = GetTimeout(config)
+	assert.NoError(t, err, "Unexpected error from GetTimeout")
+	assert.Equal(t, expected, timeoutDuration, "timeout after second failed attempt should match")
+
+	// simulate third failed attempt
+	didDeadlineExceed <- true
+	// should increment as total is greater than minimumCount and ratio is greater than threshold
+	expected = time.Duration(float32(expected) * incBy)
 	time.Sleep(50 * time.Millisecond)
 	timeoutDuration, didDeadlineExceed, err = GetTimeout(config)
 	assert.NoError(t, err, "Unexpected error from GetTimeout")

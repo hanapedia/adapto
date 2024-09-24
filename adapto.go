@@ -68,6 +68,7 @@ func GetTimeout(config Config) (timeoutDuration time.Duration, didDeadlineExceed
 		AdaptoProviders[config.Id] = provider
 	}
 	timeoutDuration, didDeadlineExceed = provider.NewTimeout()
+
 	return timeoutDuration, didDeadlineExceed, nil
 }
 
@@ -126,7 +127,7 @@ type AdaptoProvider struct {
 func (ap *AdaptoProvider) NewTimeout() (timeoutDuration time.Duration, didDeadlineExceed chan<- bool) {
 	// reset counters if interval is expired
 	now := time.Now()
-	if ap.expiry.Load().Before(now) {
+	if ap.interval != 0 && ap.expiry.Load().Before(now) {
 		ap.counts.clear()
 		ap.expiry.Store(now.Add(ap.interval))
 	}
@@ -179,8 +180,11 @@ func (ap *AdaptoProvider) inc(previousDuration time.Duration) {
 	ap.currentDuration.Store(newDuration)
 
 	// renew interval
-	now := time.Now()
 	ap.counts.clear()
+	if ap.interval == 0 {
+		return
+	}
+	now := time.Now()
 	ap.expiry.Store(now.Add(ap.interval))
 }
 
@@ -205,7 +209,10 @@ func (ap *AdaptoProvider) dec(previousDuration time.Duration) {
 	ap.currentDuration.Store(newDuration)
 
 	// renew interval
-	now := time.Now()
 	ap.counts.clear()
+	if ap.interval == 0 {
+		return
+	}
+	now := time.Now()
 	ap.expiry.Store(now.Add(ap.interval))
 }

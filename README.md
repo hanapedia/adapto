@@ -28,15 +28,17 @@ import (
 )
 
 func main() {
-    config := adapto.Config{
-        Id:             "example",              // Unique ID for the provider
-        Interval:       5 * time.Second,        // Interval for resetting counts
-        InitialTimeout: 2 * time.Second,        // Starting timeout duration
-        Threshold:      0.5,                    // Ratio threshold for triggering adjustments
-        IncBy:          1.5,                    // Multiplicative increase factor for timeouts
-        DecBy:          200 * time.Millisecond, // Additive decrease amount for timeouts
-		MinimumCount:   0,                      //Minimum number of generated timeouts to check the threshold
-    }
+	config := adapto.Config{
+		Id:             "example",              // Unique ID for the provider
+		Interval:       5 * time.Second,        // Interval for resetting counts
+		InitialTimeout: 2 * time.Second,        // Starting timeout duration
+		Threshold:      0.5,                    // Ratio threshold for triggering adjustments
+		IncBy:          1.5,                    // Multiplicative increase factor for timeouts
+		DecBy:          200 * time.Millisecond, // Additive decrease amount for timeouts
+		MinimumCount:   0,                      // Minimum number of generated timeouts to check the threshold
+		Min:            time.Millisecond,       // Minimum timeout duration allowed
+		Max:            time.Millisecond,       // Maximum timeout duration allowed. uses InitialTimeout if not set.
+	}
 
     // GetTimeout returns the following
     // - adjusted timeout duration: time.Duration
@@ -45,6 +47,7 @@ func main() {
     timeoutDuration, didDeadlineExceed, err := adapto.GetTimeout(config)
     // returns error when threshold is set greater or equal to 1 or negative
     // returns error when IncBy is smaller than or equal to 1
+    // returns error when Min is smaller than or equal to 1
     if err != nil {
         panic(err)
     }

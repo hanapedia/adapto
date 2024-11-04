@@ -82,7 +82,7 @@ func GetTimeout(config Config) (timeout time.Duration, rttCh chan<- RttSignal, e
 			margin:  margin,
 			backoff: backoff,
 		}
-		provider.Start()
+		go provider.Start()
 		AdaptoRTOProviders[config.Id] = provider
 	}
 	timeout, rttCh = provider.NewTimeout()

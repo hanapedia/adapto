@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hanapedia/adapto/count"
 	"github.com/stretchr/testify/assert"
 	"go.uber.org/atomic"
 )
@@ -68,10 +69,7 @@ func TestNewTimeout(t *testing.T) {
 	}
 
 	provider := AdaptoProvider{
-		counts: Counts{
-			total:            *atomic.NewUint32(0),
-			deadlineExceeded: *atomic.NewUint32(0),
-		},
+		counts:          count.NewCounts(),
 		currentDuration: *atomic.NewDuration(config.InitialTimeout),
 		expiry:          *atomic.NewTime(time.Now().Add(config.Interval)),
 		id:              config.Id,
@@ -89,8 +87,8 @@ func TestNewTimeout(t *testing.T) {
 	didDeadlineExceed <- true
 
 	// Verify if the counts are updated
-	assert.Equal(t, uint32(1), provider.counts.deadlineExceeded.Load(), "Deadline exceeded count should be updated")
-	assert.Equal(t, uint32(1), provider.counts.total.Load(), "Total count should be updated")
+	assert.Equal(t, uint32(1), provider.counts.DeadlineExceeded(), "Deadline exceeded count should be updated")
+	assert.Equal(t, uint32(1), provider.counts.Total(), "Total count should be updated")
 }
 
 // TestInc tests the inc methods of AdaptoProvider.
@@ -106,10 +104,7 @@ func TestInc(t *testing.T) {
 	}
 
 	provider := AdaptoProvider{
-		counts: Counts{
-			total:            *atomic.NewUint32(10),
-			deadlineExceeded: *atomic.NewUint32(4), // Ratio is 0.4, above threshold
-		},
+		counts:          count.NewCounts(),
 		currentDuration: *atomic.NewDuration(config.InitialTimeout),
 		expiry:          *atomic.NewTime(time.Now().Add(config.Interval)),
 		id:              config.Id,
@@ -141,10 +136,7 @@ func TestDec(t *testing.T) {
 	}
 
 	provider := AdaptoProvider{
-		counts: Counts{
-			total:            *atomic.NewUint32(10),
-			deadlineExceeded: *atomic.NewUint32(2), // Ratio is 0.2, below threshold
-		},
+		counts:          count.NewCounts(),
 		currentDuration: *atomic.NewDuration(config.InitialTimeout),
 		expiry:          *atomic.NewTime(time.Now().Add(config.Interval)),
 		id:              config.Id,

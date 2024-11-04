@@ -4,6 +4,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/hanapedia/adapto/count"
 	"go.uber.org/atomic"
 )
 
@@ -50,10 +51,7 @@ func GetTimeout(config Config) (timeoutDuration time.Duration, didDeadlineExceed
 			max = config.InitialTimeout
 		}
 		provider = &AdaptoProvider{
-			counts: Counts{
-				total:            *atomic.NewUint32(0),
-				deadlineExceeded: *atomic.NewUint32(0),
-			},
+			counts:          count.NewCounts(),
 			currentDuration: *atomic.NewDuration(config.InitialTimeout),
 			expiry:          *atomic.NewTime(time.Now().Add(config.Interval)),
 			id:              config.Id,
@@ -72,44 +70,9 @@ func GetTimeout(config Config) (timeoutDuration time.Duration, didDeadlineExceed
 	return timeoutDuration, didDeadlineExceed, nil
 }
 
-// Counts holds the numbers of context with timeout set.
-// adapto clears the internal Counts when new context is created by adapto
-// and when context created by adapto exceeds deadline.
-type Counts struct {
-	total            atomic.Uint32
-	deadlineExceeded atomic.Uint32
-}
-
-func (c *Counts) onNew() {
-	c.total.Add(1)
-}
-
-func (c *Counts) onDeadlineExceeded() {
-	c.deadlineExceeded.Add(1)
-}
-
-func (c *Counts) clear() {
-	c.total.Store(0)
-	c.deadlineExceeded.Store(0)
-}
-
-func (c *Counts) Total() uint32 {
-	return c.total.Load()
-}
-
-func (c *Counts) DeadlineExceeded() uint32 {
-	return c.deadlineExceeded.Load()
-}
-
-func (c *Counts) Ratio() float32 {
-	total := c.total.Load()
-	de := c.deadlineExceeded.Load()
-	return float32(de) / float32(total)
-}
-
 type AdaptoProvider struct {
 	// atomic fields
-	counts          Counts
+	counts          count.Counts
 	currentDuration atomic.Duration
 	expiry          atomic.Time
 
@@ -128,12 +91,12 @@ func (ap *AdaptoProvider) NewTimeout() (timeoutDuration time.Duration, didDeadli
 	// reset counters if interval is expired
 	now := time.Now()
 	if ap.interval != 0 && ap.expiry.Load().Before(now) {
-		ap.counts.clear()
+		ap.counts.Clear()
 		ap.expiry.Store(now.Add(ap.interval))
 	}
 
 	timeoutDuration = ap.currentDuration.Load()
-	ap.counts.onNew()
+	ap.counts.OnNew()
 
 	deadlineCh := make(chan bool)
 	go func() {
@@ -144,14 +107,14 @@ func (ap *AdaptoProvider) NewTimeout() (timeoutDuration time.Duration, didDeadli
 		case isDeadlineExceeded := <-deadlineCh:
 			timer.Stop()
 			if isDeadlineExceeded {
-				ap.counts.onDeadlineExceeded()
+				ap.counts.OnDeadlineExceeded()
 				ap.inc(timeoutDuration)
 			} else {
 				ap.dec(timeoutDuration)
 			}
 		case <-timer.C:
 			timer.Stop()
-			ap.counts.onDeadlineExceeded()
+			ap.counts.OnDeadlineExceeded()
 			ap.inc(timeoutDuration)
 		}
 	}()
@@ -180,7 +143,7 @@ func (ap *AdaptoProvider) inc(previousDuration time.Duration) {
 	ap.currentDuration.Store(newDuration)
 
 	// renew interval
-	ap.counts.clear()
+	ap.counts.Clear()
 	if ap.interval == 0 {
 		return
 	}
@@ -209,7 +172,7 @@ func (ap *AdaptoProvider) dec(previousDuration time.Duration) {
 	ap.currentDuration.Store(newDuration)
 
 	// renew interval
-	ap.counts.clear()
+	ap.counts.Clear()
 	if ap.interval == 0 {
 		return
 	}

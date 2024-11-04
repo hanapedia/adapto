@@ -10,7 +10,7 @@ import (
 
 const (
 	DEFAULT_BACKOFF = 2
-	DEFAULT_MARGIN  = 4
+	DEFAULT_MARGIN  = 1
 )
 
 type RttSignal = time.Duration
@@ -22,10 +22,10 @@ const (
 
 type Config struct {
 	Id      string
-	Max     time.Duration
-	Min     time.Duration
-	Margin  int64
-	Backoff int64
+	Max     time.Duration // max timeout value allowed
+	Min     time.Duration // min timeout value allowed
+	Margin  int64         // extra margin multplied to the origin K=4
+	Backoff int64         // backoff multiplied to the timeout when timeout
 }
 
 type AdaptoRTOProvider struct {
@@ -45,7 +45,7 @@ type AdaptoRTOProvider struct {
 	id      string
 	min     time.Duration
 	max     time.Duration
-	margin  int64
+	margin  int64 // extra margin multplied to the origin K=4
 	backoff int64
 }
 
@@ -106,15 +106,16 @@ func (arp *AdaptoRTOProvider) Start() {
 		}
 		if prevSrtt == 0 {
 			// first observation of rtt
-			srtt := int64(rtt) * 8   // use the scaled srtt for Jacobson
-			rttvar := int64(rtt) * 2 // use the scaeld rttvar for Jacobson
-			arp.timeout.Store(min(max(time.Duration(srtt+arp.margin*rttvar), arp.min), arp.max))
+			srtt := int64(rtt) * 8   // use the scaled srtt for Jacobson. R * 8 since alpha = 1/8
+			rttvar := int64(rtt) * 2 // use the scaeld rttvar for Jacobson. (R / 2) * 4 since beta = 1/4
+			rto := rtt + time.Duration(arp.margin*srtt)
+			arp.timeout.Store(min(max(rto, arp.min), arp.max))
 			arp.srtt.Store(srtt)
 			arp.rttvar.Store(rttvar)
 			continue
 		}
 
-		rto, srtt, rttvar := jacobsonCalc(int64(rtt), prevSrtt, prevRttvar)
+		rto, srtt, rttvar := jacobsonCalc(int64(rtt), prevSrtt, prevRttvar, arp.margin)
 		arp.timeout.Store(min(max(time.Duration(rto), arp.min), arp.max))
 		arp.srtt.Store(srtt)
 		arp.rttvar.Store(rttvar)
@@ -132,7 +133,7 @@ func readableCalc(R, prevSrtt, prevRttvar int64) (rto, srtt, rttvar int64) {
 	return rto, srtt, rttvar
 }
 
-func jacobsonCalc(R, prevSrtt, prevRttvar int64) (rto, srtt, rttvar int64) {
+func jacobsonCalc(R, prevSrtt, prevRttvar, margin int64) (rto, srtt, rttvar int64) {
 	R = R - (prevSrtt >> 3) // R = R - (srtt / 8)
 	prevSrtt = prevSrtt + R // srtt = srtt + R - (srtt / 8)
 	if R < 0 {
@@ -143,6 +144,6 @@ func jacobsonCalc(R, prevSrtt, prevRttvar int64) (rto, srtt, rttvar int64) {
 
 	// srtt + 4 * rttvar
 	// srtt + R - (srtt / 8) + 4 * (rttvar + |R - (srtt / 8)| - (rttvar / 4))
-	rto = (prevSrtt >> 3) + prevRttvar
+	rto = (prevSrtt >> 3) + margin*prevRttvar
 	return rto, prevSrtt, prevRttvar
 }

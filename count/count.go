@@ -1,47 +1,61 @@
 package count
 
 import (
-	"go.uber.org/atomic"
+	"sync"
 )
 
 // Counts holds the numbers of context with timeout set.
 // adapto clears the internal Counts when new context is created by adapto
 // and when context created by adapto exceeds deadline.
 type Counts struct {
-	total            atomic.Uint32
-	deadlineExceeded atomic.Uint32
+	total            uint32
+	deadlineExceeded uint32
+	mu               sync.Mutex
 }
 
 func NewCounts() Counts {
 	return Counts{
-		total:            *atomic.NewUint32(0),
-		deadlineExceeded: *atomic.NewUint32(0),
+		total:            0,
+		deadlineExceeded: 0,
 	}
 }
 
 func (c *Counts) OnNew() {
-	c.total.Add(1)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.total++
 }
 
 func (c *Counts) OnDeadlineExceeded() {
-	c.deadlineExceeded.Add(1)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.deadlineExceeded++
 }
 
 func (c *Counts) Clear() {
-	c.total.Store(0)
-	c.deadlineExceeded.Store(0)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.total = 0
+	c.deadlineExceeded = 0
 }
 
 func (c *Counts) Total() uint32 {
-	return c.total.Load()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.total
 }
 
 func (c *Counts) DeadlineExceeded() uint32 {
-	return c.deadlineExceeded.Load()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.deadlineExceeded
 }
 
 func (c *Counts) Ratio() float32 {
-	total := c.total.Load()
-	de := c.deadlineExceeded.Load()
-	return float32(de) / float32(total)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.total == 0 {
+		return 0
+	}
+	return float32(c.deadlineExceeded) / float32(c.total)
 }

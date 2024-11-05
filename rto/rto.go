@@ -2,10 +2,10 @@
 package rto
 
 import (
+	"sync"
 	"time"
 
 	"github.com/hanapedia/adapto/count"
-	"go.uber.org/atomic"
 )
 
 const (
@@ -24,28 +24,31 @@ type Config struct {
 	Id      string
 	Max     time.Duration // max timeout value allowed
 	Min     time.Duration // min timeout value allowed
-	Margin  int64         // extra margin multplied to the origin K=4
+	Margin  int64         // extra margin multiplied to the origin K=4
 	Backoff int64         // backoff multiplied to the timeout when timeout
 }
 
 type AdaptoRTOProvider struct {
-	// atomic fields
+	// fields with synchronized access
 	counts  count.Counts
-	timeout atomic.Duration
+	timeout time.Duration
 
 	// values used in timeout calculations
-	srtt   atomic.Int64
-	rttvar atomic.Int64
+	srtt   int64
+	rttvar int64
 
-	// channel to recevie the recorded rtt
+	// channel to receive the recorded rtt
 	// in the event of timeout, sender should send `DeadlineExceeded` signal
 	rttCh chan RttSignal
+
+	// mutex for synchronizing access to timeout calculation fields
+	mu sync.Mutex
 
 	// configuration fields
 	id      string
 	min     time.Duration
 	max     time.Duration
-	margin  int64 // extra margin multplied to the origin K=4
+	margin  int64 // extra margin multiplied to the origin K=4
 	backoff int64
 }
 
@@ -71,9 +74,9 @@ func GetTimeout(config Config) (timeout time.Duration, rttCh chan<- RttSignal, e
 		}
 		provider = &AdaptoRTOProvider{
 			counts:  count.NewCounts(),
-			timeout: *atomic.NewDuration(config.Max),
-			srtt:    *atomic.NewInt64(0),
-			rttvar:  *atomic.NewInt64(0),
+			timeout: config.Max,
+			srtt:    0,
+			rttvar:  0,
 
 			rttCh:   make(chan RttSignal),
 			id:      config.Id,
@@ -91,34 +94,40 @@ func GetTimeout(config Config) (timeout time.Duration, rttCh chan<- RttSignal, e
 }
 
 func (arp *AdaptoRTOProvider) NewTimeout() (timeout time.Duration, rttCh chan<- RttSignal) {
-	return arp.timeout.Load(), arp.rttCh
+	arp.mu.Lock()
+	defer arp.mu.Unlock()
+	return arp.timeout, arp.rttCh
 }
 
-// Start starts the provider by spawning a go routine that waits for new rtt or timeout event and updates the timeout value accordingly
+// Start starts the provider by spawning a goroutine that waits for new rtt or timeout event and updates the timeout value accordingly
 func (arp *AdaptoRTOProvider) Start() {
 	for rtt := range arp.rttCh {
-		prevRto := arp.timeout.Load()
-		prevSrtt := arp.srtt.Load()
-		prevRttvar := arp.rttvar.Load()
+		arp.mu.Lock()
+		prevRto := arp.timeout
+		prevSrtt := arp.srtt
+		prevRttvar := arp.rttvar
+
 		if rtt == DeadlineExceeded {
-			arp.timeout.Store(min(arp.max, prevRto*time.Duration(arp.backoff)))
+			arp.timeout = min(arp.max, prevRto*time.Duration(arp.backoff))
+			arp.mu.Unlock()
 			continue
 		}
+
 		if prevSrtt == 0 {
 			// first observation of rtt
-			srtt := int64(rtt) * 8   // use the scaled srtt for Jacobson. R * 8 since alpha = 1/8
-			rttvar := int64(rtt) * 2 // use the scaeld rttvar for Jacobson. (R / 2) * 4 since beta = 1/4
-			rto := rtt + time.Duration(arp.margin*srtt)
-			arp.timeout.Store(min(max(rto, arp.min), arp.max))
-			arp.srtt.Store(srtt)
-			arp.rttvar.Store(rttvar)
+			arp.srtt = int64(rtt) * 8   // use the scaled srtt for Jacobson. R * 8 since alpha = 1/8
+			arp.rttvar = int64(rtt) * 2 // use the scaled rttvar for Jacobson. (R / 2) * 4 since beta = 1/4
+			rto := rtt + time.Duration(arp.margin*arp.srtt)
+			arp.timeout = min(max(rto, arp.min), arp.max)
+			arp.mu.Unlock()
 			continue
 		}
 
 		rto, srtt, rttvar := jacobsonCalc(int64(rtt), prevSrtt, prevRttvar, arp.margin)
-		arp.timeout.Store(min(max(time.Duration(rto), arp.min), arp.max))
-		arp.srtt.Store(srtt)
-		arp.rttvar.Store(rttvar)
+		arp.timeout = min(max(time.Duration(rto), arp.min), arp.max)
+		arp.srtt = srtt
+		arp.rttvar = rttvar
+		arp.mu.Unlock()
 	}
 }
 
@@ -134,16 +143,15 @@ func readableCalc(R, prevSrtt, prevRttvar int64) (rto, srtt, rttvar int64) {
 }
 
 func jacobsonCalc(R, prevSrtt, prevRttvar, margin int64) (rto, srtt, rttvar int64) {
-	R = R - (prevSrtt >> 3) // R = R - (srtt / 8)
-	prevSrtt = prevSrtt + R // srtt = srtt + R - (srtt / 8)
-	if R < 0 {
-		R = -R
+	err := R - (prevSrtt >> 3) // R = R - (srtt / 8)
+	srtt = prevSrtt + err       // srtt = srtt + R - (srtt / 8)
+	if err < 0 {
+		err = -err
 	}
-	R = R - (prevRttvar >> 2)   // R = |R - (srtt / 8)| - (rttvar / 4)
-	prevRttvar = prevRttvar + R // rttvar = rttvar + |R - (srtt / 8)| - (rttvar / 4)
+	err = err - (prevRttvar >> 2) // R = |R - (srtt / 8)| - (rttvar / 4)
+	rttvar = prevRttvar + err      // rttvar = rttvar + |R - (srtt / 8)| - (rttvar / 4)
 
 	// srtt + 4 * rttvar
-	// srtt + R - (srtt / 8) + 4 * (rttvar + |R - (srtt / 8)| - (rttvar / 4))
-	rto = (prevSrtt >> 3) + margin*prevRttvar
-	return rto, prevSrtt, prevRttvar
+	rto = (srtt >> 3) + margin*rttvar
+	return rto, srtt, rttvar
 }

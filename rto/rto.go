@@ -50,7 +50,7 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("Min is required")
 	}
 	if c.SLO == 0 {
-		fmt.Println("SLO is not provided, using the normal RTO implementation")
+		c.Logger.Info("SLO is not provided, using the normal RTO implementation")
 	}
 	if c.SLO != 0 && c.Capacity == 0 {
 		return fmt.Errorf("Capacity is required if SLO is provided")
@@ -190,7 +190,7 @@ func (arp *AdaptoRTOProvider) onRequestLimit() {
 		// shift to conservative timeout increment
 		arp.backoff = CONSERVATIVE_BACKOFF
 	}
-	arp.logger.Info("on request limit reached", "fr", fr, "slo", arp.slo, "kMargin", arp.kMargin, "backoff", arp.backoff, "rto", arp.timeout, "srtt", arp.srtt, "rttvar", arp.rttvar, "minRtt", arp.minRtt)
+	arp.logger.Debug("on request limit reached", "fr", fr, "slo", arp.slo, "kMargin", arp.kMargin, "backoff", arp.backoff, "rto", arp.timeout, "srtt", arp.srtt, "rttvar", arp.rttvar, "minRtt", arp.minRtt)
 }
 
 // onInterval calculates failure rate and adjusts margin
@@ -206,7 +206,7 @@ func (arp *AdaptoRTOProvider) onInterval() {
 	} else if arp.kMargin > 1 {
 		arp.kMargin-- // TODO: think about the rational of this. could lead to oscillation
 	}
-	arp.logger.Info("on interval reached", "fr", fr, "slo", arp.slo, "kMargin", arp.kMargin)
+	arp.logger.Debug("on interval reached", "fr", fr, "slo", arp.slo, "kMargin", arp.kMargin)
 }
 
 // calcInflight calculates current inflight requests
@@ -261,7 +261,7 @@ func (arp *AdaptoRTOProvider) ComputeNewRTO(rtt time.Duration) {
 		if !arp.timeoutLock {
 			arp.timeout = min(arp.max, arp.timeout*time.Duration(arp.backoff))
 		}
-		arp.logger.Info("new RTO computed", "rto", arp.timeout.String(), "rtt", "DeadlineExceeded")
+		arp.logger.Debug("new RTO computed", "rto", arp.timeout.String(), "rtt", "DeadlineExceeded")
 		return
 	}
 
@@ -273,7 +273,7 @@ func (arp *AdaptoRTOProvider) ComputeNewRTO(rtt time.Duration) {
 		if !arp.timeoutLock {
 			arp.timeout = min(max(rto, arp.min), arp.max)
 		}
-		arp.logger.Info("new RTO computed", "rto", arp.timeout.String(), "rtt", rtt.String())
+		arp.logger.Debug("new RTO computed", "rto", arp.timeout.String(), "rtt", rtt.String())
 		return
 	}
 
@@ -283,7 +283,7 @@ func (arp *AdaptoRTOProvider) ComputeNewRTO(rtt time.Duration) {
 	}
 	arp.srtt = srtt
 	arp.rttvar = rttvar
-	arp.logger.Info("new RTO computed", "rto", arp.timeout.String(), "rtt", rtt.String())
+	arp.logger.Debug("new RTO computed", "rto", arp.timeout.String(), "rtt", rtt.String())
 }
 
 // Start starts the provider by spawning a goroutine that waits for new rtt or timeout event and updates the timeout value accordingly.

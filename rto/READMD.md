@@ -40,12 +40,19 @@ When updating the RTO value upon encoutering timeout, the previously computed fa
 - if failure rate is **in the safe range**, the RTO will be doubled as normal. (and possibly request is retried(WIP))
 
 #### Parameters
-- Number of requests to calculate the new failure rate
-    - this could be set dynamically based on capacity estimation (in the future work)
-- Fallback time interval to calculate the new failure rate
+- Capacity (static for now) in Requests per second
+    - N: Number of requests to calculate the new failure rate
+    - T: Fallback time interval to calculate the new failure rate. could be given by the users. sane default is some fraction of metrics scrape interval by external telemetry
+    - capacity = N / T
+    - these could be set dynamically based on capacity estimation (in the future work)
+    - e.g. Capacity = 150rps, T = 5s (1/3 prometheus scrape interval), N = 750
 - **SLO target failure rate**
-- Safe range defined by Fraction of SLO target*
+- Safe range defined by Fraction of SLO target* could be defined by the users as their preference
 
+## Dynamic Margin Determination
+When the service is not under overload, this version of RTO will try to find the *margin* that will produce acceptable failure rate.
+- RTO = srtt + margin * K * rttvar, (where K = 4, as defined by Jacobson)
+- margin should be integer for simplicity. (for now) (could be left for future optimization)
 
 ## Configuration parameters
 - max: maximum timeout value allowed

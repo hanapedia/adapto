@@ -200,6 +200,7 @@ func (arp *AdaptoRTOProvider) onRequestLimit() {
 		rto := arp.minRtt + time.Duration(arp.kMargin*arp.rttvar) // because rtt = srtt / 8
 		arp.timeout = min(max(rto, arp.min), arp.max)
 		arp.timeoutLock = true // lock timeout update until overload is gone
+		arp.logger.Info("timeout locked", "rto", rto, "adjusted_fr", fr)
 	} else {
 		// TODO: consider adding safetry margin
 		// shift to conservative timeout increment
@@ -215,6 +216,7 @@ func (arp *AdaptoRTOProvider) onInterval() {
 	arp.timeoutLock = false // unlock timeout update
 	arp.backoff = DEFAULT_BACKOFF
 	fr := arp.failureRate()
+	arp.logger.Info("timeout unlocked", "fr", fr)
 	arp.resetCounters() // reset counters after failure rate calculation
 	if fr >= arp.slo {
 		arp.kMargin++

@@ -19,6 +19,7 @@ const (
 	LOG2_ALPHA           int64         = 3
 	BETA_SCALING         int64         = 4
 	LOG2_BETA            int64         = 2
+	SLO_SAFETY_MARGIN    float64       = 0.5
 )
 
 type RttSignal = time.Duration
@@ -93,7 +94,8 @@ type AdaptoRTOProvider struct {
 	// in the event of timeout, sender should send `DeadlineExceeded` signal
 	rttCh chan RttSignal
 
-	requestLimt int64 // request limit computed by capacity / interval
+	requestLimt int64   // request limit computed by capacity / interval
+	sloAdjusted float64 // slo with safety margin
 
 	// configuration fields
 	id       string
@@ -125,6 +127,7 @@ func NewAdaptoRTOProvider(config Config) *AdaptoRTOProvider {
 		failed: 0,
 
 		requestLimt: config.Capacity * config.Interval.Milliseconds() / 1000,
+		sloAdjusted: config.SLO * SLO_SAFETY_MARGIN,
 
 		rttCh:    make(chan RttSignal),
 		id:       config.Id,
@@ -169,7 +172,7 @@ func (arp *AdaptoRTOProvider) adjustedFailureRate() float64 {
 	if arp.req == 0 {
 		return 0
 	}
-	return float64(arp.failed + arp.inflight()) / float64(arp.req)
+	return float64(arp.failed+arp.inflight()) / float64(arp.req)
 }
 
 // resetCounters resets counters
@@ -189,25 +192,19 @@ func (arp *AdaptoRTOProvider) onRequestLimit() {
 	// with higher chance than current failure rate, dur to overload.
 	// a conservative approach is to consider all inflight as failed and add them to failed
 	// so compute the failure rate by (failed + inflight) / req instead of failed / res
-	fr := arp.adjustedFailureRate()
+	// OR could ignore the failure rate entirely and lock the timeout at reaching capacity load.
+	/* fr := arp.adjustedFailureRate() */
 	/* fr := arp.failureRate() */
+	// TODO: consider the rational of resetting the counters
 	arp.resetCounters() // reset counters after failure rate calculation
-	if fr >= arp.slo {
-		// fallback to timeout with mimimum RTT
-		// TODO: whether to reset srtt and rttvar remains as question
-		arp.srtt = int64(arp.minRtt) * ALPHA_SCALING              // use the scaled srtt for Jacobson. R * 8 since alpha = 1/8
-		arp.rttvar = (int64(arp.minRtt) >> 1) * BETA_SCALING      // use the scaled rttvar for Jacobson. (R / 2) * 4 since beta = 1/4
-		rto := arp.minRtt + time.Duration(arp.kMargin*arp.rttvar) // because rtt = srtt / 8
-		arp.timeout = min(max(rto, arp.min), arp.max)
-		arp.timeoutLock = true // lock timeout update until overload is gone
-		arp.logger.Info("timeout locked", "rto", rto, "adjusted_fr", fr)
-	} else {
-		// TODO: consider adding safetry margin
-		// shift to conservative timeout increment
-		arp.backoff = CONSERVATIVE_BACKOFF
-		arp.logger.Info("timeout unlocked, shifting to conservative backoff", "backoff", arp.backoff)
-	}
-	arp.logger.Debug("on request limit reached", "fr", fr, "slo", arp.slo, "kMargin", arp.kMargin, "backoff", arp.backoff, "rto", arp.timeout, "srtt", arp.srtt, "rttvar", arp.rttvar, "minRtt", arp.minRtt)
+	// fallback to timeout with mimimum RTT
+	// TODO: whether to reset srtt and rttvar remains as question
+	arp.srtt = int64(arp.minRtt) * ALPHA_SCALING              // use the scaled srtt for Jacobson. R * 8 since alpha = 1/8
+	arp.rttvar = (int64(arp.minRtt) >> 1) * BETA_SCALING      // use the scaled rttvar for Jacobson. (R / 2) * 4 since beta = 1/4
+	rto := arp.minRtt + time.Duration(arp.kMargin*arp.rttvar) // because rtt = srtt / 8
+	arp.timeout = min(max(rto, arp.min), arp.max)
+	arp.timeoutLock = true // lock timeout update until overload is gone
+	arp.logger.Info("timeout locked", "rto", rto)
 }
 
 // onInterval calculates failure rate and adjusts margin
@@ -218,11 +215,17 @@ func (arp *AdaptoRTOProvider) onInterval() {
 	arp.backoff = DEFAULT_BACKOFF
 	fr := arp.failureRate()
 	arp.resetCounters() // reset counters after failure rate calculation
-	if fr >= arp.slo {
+	// use adjusted SLO
+	if fr >= arp.sloAdjusted {
 		arp.kMargin++
 		arp.logger.Info("timeout unlocked, incrementing kMargin", "fr", fr, "kMargin", arp.kMargin)
 	} else if arp.kMargin > 1 {
-		arp.kMargin-- // TODO: think about the rational of this. could lead to oscillation
+		// TODO: refer to the difference between the current fr and slo, and current kMargin
+		// to decide if it is rational to decrement
+		// (kMargin - 1) / kMargin < slo - fr / fr
+		// 1 / 2  < 0.01 - 0.009 / 0.009
+		// 5 / 6 < 1/9
+		arp.kMargin--
 		arp.logger.Info("timeout unlocked, decrementing kMargin", "fr", fr, "kMargin", arp.kMargin)
 	}
 }

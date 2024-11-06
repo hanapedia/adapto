@@ -205,6 +205,7 @@ func (arp *AdaptoRTOProvider) onRequestLimit() {
 		// TODO: consider adding safetry margin
 		// shift to conservative timeout increment
 		arp.backoff = CONSERVATIVE_BACKOFF
+		arp.logger.Info("timeout unlocked, shifting to conservative backoff", "backoff", arp.backoff)
 	}
 	arp.logger.Debug("on request limit reached", "fr", fr, "slo", arp.slo, "kMargin", arp.kMargin, "backoff", arp.backoff, "rto", arp.timeout, "srtt", arp.srtt, "rttvar", arp.rttvar, "minRtt", arp.minRtt)
 }
@@ -216,14 +217,14 @@ func (arp *AdaptoRTOProvider) onInterval() {
 	arp.timeoutLock = false // unlock timeout update
 	arp.backoff = DEFAULT_BACKOFF
 	fr := arp.failureRate()
-	arp.logger.Info("timeout unlocked", "fr", fr)
 	arp.resetCounters() // reset counters after failure rate calculation
 	if fr >= arp.slo {
 		arp.kMargin++
+		arp.logger.Info("timeout unlocked, incrementing kMargin", "fr", fr, "kMargin", arp.kMargin)
 	} else if arp.kMargin > 1 {
 		arp.kMargin-- // TODO: think about the rational of this. could lead to oscillation
+		arp.logger.Info("timeout unlocked, decrementing kMargin", "fr", fr, "kMargin", arp.kMargin)
 	}
-	arp.logger.Debug("on interval reached", "fr", fr, "slo", arp.slo, "kMargin", arp.kMargin)
 }
 
 // calcInflight calculates current inflight requests

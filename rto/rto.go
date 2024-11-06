@@ -163,6 +163,15 @@ func (arp *AdaptoRTOProvider) failureRate() float64 {
 	return float64(arp.failed) / float64(arp.res)
 }
 
+// adjustedFailureRate calculates failure rate adjusted with current inflight for the current interval
+// MUST be called in thread safe manner as it does not lock mu
+func (arp *AdaptoRTOProvider) adjustedFailureRate() float64 {
+	if arp.req == 0 {
+		return 0
+	}
+	return float64(arp.failed + arp.inflight()) / float64(arp.req)
+}
+
 // resetCounters resets counters
 // req counter is reset to whatever the inflight was at this moment
 func (arp *AdaptoRTOProvider) resetCounters() {
@@ -175,7 +184,13 @@ func (arp *AdaptoRTOProvider) resetCounters() {
 // onRequestLimit calculates failureRate
 // should lock rto updates
 func (arp *AdaptoRTOProvider) onRequestLimit() {
-	fr := arp.failureRate()
+	// TODO: currently, this does not activate soon enough because there is a gap between req and res.
+	// instead of looking at just the current fr, it should also look at current inflight, which could fail
+	// with higher chance than current failure rate, dur to overload.
+	// a conservative approach is to consider all inflight as failed and add them to failed
+	// so compute the failure rate by (failed + inflight) / req instead of failed / res
+	fr := arp.adjustedFailureRate()
+	/* fr := arp.failureRate() */
 	arp.resetCounters() // reset counters after failure rate calculation
 	if fr >= arp.slo {
 		// fallback to timeout with mimimum RTT

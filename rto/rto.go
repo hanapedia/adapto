@@ -225,19 +225,23 @@ func (arp *AdaptoRTOProvider) onInterval() {
 	if fr >= arp.sloAdjusted {
 		arp.kMargin++
 		arp.logger.Info("timeout unlocked, incrementing kMargin", "fr", fr, "kMargin", arp.kMargin)
-	} else if arp.kMargin > 1 {
-		// DONE: refer to the difference between the current fr and slo, and current kMargin
-		// to decide if it is rational to decrement
-		// (kMargin - 1) / kMargin < slo - fr / fr
-		// 1 / 2  < 0.01 - 0.009 / 0.009
-		// 5 / 6 < 1/9
-		// DONE(v1.0.13): decrementing kMargin causes unstable failure rate even when load is low
-		// conisder removing this entirely
-		// decrementing this value could be handled after some significant interval to catch long term changes in latency variance
-		// -> disabled for now
-		arp.kMargin--
-		arp.logger.Info("timeout unlocked, decrementing kMargin", "fr", fr, "kMargin", arp.kMargin)
+		return
 	}
+
+	// DONE: refer to the difference between the current fr and slo, and current kMargin
+	// to decide if it is rational to decrement
+	// (kMargin - 1) / kMargin < slo - fr / fr
+	// 1 / 2  < 0.01 - 0.009 / 0.009
+	// 5 / 6 < 1/9
+	// DONE(v1.0.13): decrementing kMargin causes unstable failure rate even when load is low
+	// conisder removing this entirely
+	// decrementing this value could be handled after some significant interval to catch long term changes in latency variance
+	// -> disabled for now
+	/* if arp.kMargin > 1 { */
+	/* 	arp.kMargin-- */
+	/* 	arp.logger.Info("timeout unlocked, decrementing kMargin", "fr", fr, "kMargin", arp.kMargin) */
+	/* 	return */
+	/* } */
 }
 
 // calcInflight calculates current inflight requests

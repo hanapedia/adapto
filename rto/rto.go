@@ -95,7 +95,7 @@ type AdaptoRTOProvider struct {
 	rttCh chan RttSignal
 
 	requestLimt int64   // request limit computed by capacity / interval
-	sloAdjusted float64 // slo with safety margin
+	sloAdjusted float64 // slo with safety margin. needed if kMargin is decremented
 
 	// configuration fields
 	id       string
@@ -187,21 +187,27 @@ func (arp *AdaptoRTOProvider) resetCounters() {
 // onRequestLimit calculates failureRate
 // should lock rto updates
 func (arp *AdaptoRTOProvider) onRequestLimit() {
-	// TODO: currently, this does not activate soon enough because there is a gap between req and res.
+	// DONE(v1.0.11): currently, this does not activate soon enough because there is a gap between req and res.
 	// instead of looking at just the current fr, it should also look at current inflight, which could fail
 	// with higher chance than current failure rate, dur to overload.
 	// a conservative approach is to consider all inflight as failed and add them to failed
 	// so compute the failure rate by (failed + inflight) / req instead of failed / res
-	// OR could ignore the failure rate entirely and lock the timeout at reaching capacity load.
+	//
+	// DONE(v1.0.12): OR could ignore the failure rate entirely and lock the timeout at reaching capacity load.
 	/* fr := arp.adjustedFailureRate() */
 	/* fr := arp.failureRate() */
-	// TODO: consider the rational of resetting the counters
+
+	// TODO:(low priority) consider the rational of resetting the counters
 	arp.resetCounters() // reset counters after failure rate calculation
 	// fallback to timeout with mimimum RTT
-	// TODO: whether to reset srtt and rttvar remains as question
-	arp.srtt = int64(arp.minRtt) * ALPHA_SCALING              // use the scaled srtt for Jacobson. R * 8 since alpha = 1/8
-	arp.rttvar = (int64(arp.minRtt) >> 1) * BETA_SCALING      // use the scaled rttvar for Jacobson. (R / 2) * 4 since beta = 1/4
-	rto := arp.minRtt + time.Duration(arp.kMargin*arp.rttvar) // because rtt = srtt / 8
+	// DONE(v1.0.13): whether to reset srtt and rttvar remains as question -> do not reset
+	// if not reset, the timeout calculation can use srtt and rttvar from right before the overload
+	// this is probably better
+	// no need to compute srtt
+	/* srtt = int64(arp.minRtt) * ALPHA_SCALING              // use the scaled srtt for Jacobson. R * 8 since alpha = 1/8 */
+	rttvar := (int64(arp.minRtt) >> 1) * BETA_SCALING      // use the scaled rttvar for Jacobson. (R / 2) * 4 since beta = 1/4
+	// compute rto if it was the first rtt observed
+	rto := arp.minRtt + time.Duration(arp.kMargin*rttvar) // because rtt = srtt / 8
 	arp.timeout = min(max(rto, arp.min), arp.max)
 	arp.timeoutLock = true // lock timeout update until overload is gone
 	arp.logger.Info("timeout locked", "rto", rto)
@@ -220,11 +226,15 @@ func (arp *AdaptoRTOProvider) onInterval() {
 		arp.kMargin++
 		arp.logger.Info("timeout unlocked, incrementing kMargin", "fr", fr, "kMargin", arp.kMargin)
 	} else if arp.kMargin > 1 {
-		// TODO: refer to the difference between the current fr and slo, and current kMargin
+		// DONE: refer to the difference between the current fr and slo, and current kMargin
 		// to decide if it is rational to decrement
 		// (kMargin - 1) / kMargin < slo - fr / fr
 		// 1 / 2  < 0.01 - 0.009 / 0.009
 		// 5 / 6 < 1/9
+		// DONE(v1.0.13): decrementing kMargin causes unstable failure rate even when load is low
+		// conisder removing this entirely
+		// decrementing this value could be handled after some significant interval to catch long term changes in latency variance
+		// -> disabled for now
 		arp.kMargin--
 		arp.logger.Info("timeout unlocked, decrementing kMargin", "fr", fr, "kMargin", arp.kMargin)
 	}
@@ -265,6 +275,10 @@ func GetTimeout(config Config) (timeout time.Duration, rttCh chan<- RttSignal, e
 	return timeout, rttCh, nil
 }
 
+// NewTimeout returns the current timeout value
+// TODO: currently, timeouts are adjusted for every response and every capacity * interval requests.
+// this means that the timeout cannot quickly adjuste to the sudden increase in requests until they return.
+// consider adjusting the timeout value based on the current inflight
 func (arp *AdaptoRTOProvider) NewTimeout() (timeout time.Duration, rttCh chan<- RttSignal) {
 	arp.mu.Lock()
 	defer arp.mu.Unlock()

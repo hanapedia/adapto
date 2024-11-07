@@ -22,12 +22,18 @@ const (
 	SLO_SAFETY_MARGIN    float64       = 0.5
 )
 
+// DONE(v1.0.14): consider the raional of using negative duration for timedout requests
+// so that the duration that just timed out can be transferred and used
+// in that case, there is no need to define DeadlineExceeded.
+// this will be breaking change for the users
+
+// RttSignal is alias for time.Duration that is used for typing the channel used to report rtt.
 type RttSignal = time.Duration
 
-const (
-	DeadlineExceeded RttSignal = iota
-	// add new signals if needed
-)
+// DeadlineExceeded checks if rtt signal is for requests that DeadlineExceeded
+func DeadlineExceeded(rtt RttSignal) bool {
+	return rtt < 0
+}
 
 type Config struct {
 	Id       string
@@ -280,9 +286,11 @@ func GetTimeout(config Config) (timeout time.Duration, rttCh chan<- RttSignal, e
 }
 
 // NewTimeout returns the current timeout value
-// TODO: currently, timeouts are adjusted for every response and every capacity * interval requests.
+// TODO2: currently, timeouts are adjusted for every response and every capacity * interval requests.
 // this means that the timeout cannot quickly adjuste to the sudden increase in requests until they return.
 // consider adjusting the timeout value based on the current inflight
+// could possibly use X = inflight / requestLimt
+// higher the X, it is close to being overloaded
 func (arp *AdaptoRTOProvider) NewTimeout() (timeout time.Duration, rttCh chan<- RttSignal) {
 	arp.mu.Lock()
 	defer arp.mu.Unlock()
@@ -293,15 +301,13 @@ func (arp *AdaptoRTOProvider) NewTimeout() (timeout time.Duration, rttCh chan<- 
 // ComputeNewRTO computes new rto based on new rtt
 // MUST be called in thread safe manner as it does not lock mu
 func (arp *AdaptoRTOProvider) ComputeNewRTO(rtt time.Duration) {
-	if rtt == DeadlineExceeded {
-		// TODO: doubling just the rto value might only have effect on the next rto
+	if DeadlineExceeded(rtt) {
+		// DONE(v1.0.14): doubling just the rto value might only have effect on the next rto
 		// because as soon as a request succeeds, the rto value is computed with srtt and rttvar prior to timeout.
+		// could possibly adjust rto using the timeout value for this request -> implemented
 		arp.onDeadlineExceeded() // increment failed
-		if !arp.timeoutLock {
-			arp.timeout = min(arp.max, arp.timeout*time.Duration(arp.backoff))
-		}
-		arp.logger.Debug("new RTO computed", "rto", arp.timeout.String(), "rtt", "DeadlineExceeded")
-		return
+		rtt *= -1
+		arp.logger.Debug("DeadlineExceeded", "rto", arp.timeout.String(), "rtt", rtt)
 	}
 
 	if arp.srtt == 0 {
@@ -331,9 +337,6 @@ func (arp *AdaptoRTOProvider) Start() {
 	for rtt := range arp.rttCh {
 		arp.mu.Lock()
 		arp.onRtt() // increment res
-		if rtt != DeadlineExceeded {
-			arp.minRtt = min(rtt, arp.minRtt)
-		}
 		arp.ComputeNewRTO(rtt)
 		arp.mu.Unlock()
 	}
@@ -355,7 +358,7 @@ func (arp *AdaptoRTOProvider) StartWithSLO() {
 				arp.mu.Unlock()
 				continue
 			}
-			if rtt != DeadlineExceeded {
+			if !DeadlineExceeded(rtt) {
 				arp.minRtt = min(rtt, arp.minRtt)
 			}
 			arp.ComputeNewRTO(rtt)

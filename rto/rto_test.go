@@ -74,7 +74,7 @@ func TestTimeoutBackoff(t *testing.T) {
 		Min: 50 * time.Millisecond,
 	}
 
-	_, rttCh, err := GetTimeout(config)
+	timeout, rttCh, err := GetTimeout(config)
 	assert.NoError(t, err, "Error should be nil for GetTimeout")
 
 	provider := AdaptoRTOProviders[config.Id]
@@ -87,7 +87,7 @@ func TestTimeoutBackoff(t *testing.T) {
 	provider.mu.Unlock()
 
 	// Send a DeadlineExceeded signal to test backoff
-	rttCh <- DeadlineExceeded
+	rttCh <- -timeout
 
 	time.Sleep(50 * time.Millisecond)
 	// Check if timeout was backed off correctly
@@ -98,9 +98,9 @@ func TestTimeoutBackoff(t *testing.T) {
 
 func TestMinMaxConstraints(t *testing.T) {
 	config := Config{
-		Id:      "test4",
-		Max:     5 * time.Second,
-		Min:     500 * time.Millisecond,
+		Id:  "test4",
+		Max: 5 * time.Second,
+		Min: 500 * time.Millisecond,
 	}
 
 	_, rttCh, err := GetTimeout(config)

@@ -10,16 +10,17 @@ import (
 )
 
 const (
-	DEFAULT_BACKOFF      int64         = 2
-	CONSERVATIVE_BACKOFF int64         = 1
-	DEFAULT_K_MARGIN     int64         = 1
-	DEFAULT_INTERVAL     time.Duration = 5 * time.Second
-	DEFAULT_SLO          float64       = 0.1
-	ALPHA_SCALING        int64         = 8
-	LOG2_ALPHA           int64         = 3
-	BETA_SCALING         int64         = 4
-	LOG2_BETA            int64         = 2
-	SLO_SAFETY_MARGIN    float64       = 0.5
+	DEFAULT_BACKOFF        int64         = 2
+	CONSERVATIVE_BACKOFF   int64         = 1
+	DEFAULT_K_MARGIN       int64         = 1
+	DEFAULT_INTERVAL       time.Duration = 5 * time.Second
+	DEFAULT_SLO            float64       = 0.1
+	ALPHA_SCALING          int64         = 8
+	LOG2_ALPHA             int64         = 3
+	BETA_SCALING           int64         = 4
+	LOG2_BETA              int64         = 2
+	LOG2_SLO_SAFETY_MARGIN int64         = 1    // safety margin of 0.5 or division by 2
+	FR_SCALING             int64         = 10e5 // keep the fr to .000001 precision
 )
 
 // DONE(v1.0.14): consider the raional of using negative duration for timedout requests
@@ -82,6 +83,7 @@ type AdaptoRTOProvider struct {
 	rttvar  int64
 	kMargin int64 // extra margin multiplied to the origin K=4
 	backoff int64 // backoff multiplier
+	fr      int64 // cumulative failure rate computed as moving average. scaled by FR_SCALING
 
 	// keep track of minimum RTT to fallback to
 	minRtt time.Duration
@@ -100,8 +102,8 @@ type AdaptoRTOProvider struct {
 	// in the event of timeout, sender should send `DeadlineExceeded` signal
 	rttCh chan RttSignal
 
-	requestLimt int64   // request limit computed by capacity / interval
-	sloAdjusted float64 // slo with safety margin. needed if kMargin is decremented
+	requestLimt int64 // request limit computed by capacity / interval
+	sloAdjusted int64 // slo with safety margin. also scaled to integer
 
 	// configuration fields
 	id       string
@@ -133,7 +135,7 @@ func NewAdaptoRTOProvider(config Config) *AdaptoRTOProvider {
 		failed: 0,
 
 		requestLimt: config.Capacity * config.Interval.Milliseconds() / 1000,
-		sloAdjusted: config.SLO * SLO_SAFETY_MARGIN,
+		sloAdjusted: int64(config.SLO * float64(FR_SCALING)) >> LOG2_SLO_SAFETY_MARGIN,
 
 		rttCh:    make(chan RttSignal),
 		id:       config.Id,
@@ -163,22 +165,23 @@ func (arp *AdaptoRTOProvider) onDeadlineExceeded() {
 	arp.failed++
 }
 
-// failureRate calculates failure rate for the current interval
+// failureRate calculates failure rate for the current interval.
+// returns fr scaled by FR_SCALING
 // MUST be called in thread safe manner as it does not lock mu
-func (arp *AdaptoRTOProvider) failureRate() float64 {
+func (arp *AdaptoRTOProvider) calcFailureRate() int64 {
 	if arp.res == 0 {
 		return 0
 	}
-	return float64(arp.failed) / float64(arp.res)
-}
-
-// adjustedFailureRate calculates failure rate adjusted with current inflight for the current interval
-// MUST be called in thread safe manner as it does not lock mu
-func (arp *AdaptoRTOProvider) adjustedFailureRate() float64 {
-	if arp.req == 0 {
-		return 0
+	fr := arp.failed * FR_SCALING / arp.res
+	arp.logger.Info("computing fr", "failed", arp.failed, "fr", fr, "arp.fr", arp.fr)
+	if arp.fr == 0 {
+		arp.fr = fr
+		return arp.fr
 	}
-	return float64(arp.failed+arp.inflight()) / float64(arp.req)
+	// if previous arp.fr is too high, it takes time for fr to be adjusted
+	// so new fr should be waited more
+	arp.fr = fr - ((arp.fr + fr) >> ALPHA_SCALING)
+	return arp.fr
 }
 
 // resetCounters resets counters
@@ -211,7 +214,7 @@ func (arp *AdaptoRTOProvider) onRequestLimit() {
 	// this is probably better
 	// no need to compute srtt
 	/* srtt = int64(arp.minRtt) * ALPHA_SCALING              // use the scaled srtt for Jacobson. R * 8 since alpha = 1/8 */
-	rttvar := (int64(arp.minRtt) >> 1) * BETA_SCALING      // use the scaled rttvar for Jacobson. (R / 2) * 4 since beta = 1/4
+	rttvar := (int64(arp.minRtt) >> 1) * BETA_SCALING // use the scaled rttvar for Jacobson. (R / 2) * 4 since beta = 1/4
 	// compute rto if it was the first rtt observed
 	rto := arp.minRtt + time.Duration(arp.kMargin*rttvar) // because rtt = srtt / 8
 	arp.timeout = min(max(rto, arp.min), arp.max)
@@ -222,15 +225,18 @@ func (arp *AdaptoRTOProvider) onRequestLimit() {
 // onInterval calculates failure rate and adjusts margin
 // this should be the only way margin is mutated
 // should unlock rto updates
+// TODO: if the interval was to be set at 1 second,
+// it could be better to look at long term average failure rate because there won't be much samples
+// so we could use the similar algorithm as RTO
 func (arp *AdaptoRTOProvider) onInterval() {
 	arp.timeoutLock = false // unlock timeout update
 	arp.backoff = DEFAULT_BACKOFF
-	fr := arp.failureRate()
+	fr := arp.calcFailureRate()
 	arp.resetCounters() // reset counters after failure rate calculation
 	// use adjusted SLO
-	if fr >= arp.sloAdjusted {
+	if fr > arp.sloAdjusted {
 		arp.kMargin++
-		arp.logger.Info("timeout unlocked, incrementing kMargin", "fr", fr, "kMargin", arp.kMargin)
+		arp.logger.Info("timeout unlocked, incrementing kMargin", "fr", fr, "sloAdjusted", arp.sloAdjusted, "kMargin", arp.kMargin)
 		return
 	}
 
@@ -243,6 +249,8 @@ func (arp *AdaptoRTOProvider) onInterval() {
 	// conisder removing this entirely
 	// decrementing this value could be handled after some significant interval to catch long term changes in latency variance
 	// -> disabled for now
+	// -> TODO: could reference long term latency distribution to decrement kMargin periodically
+	// -> e.g. if p(1-slo) latency is well below the timeout being set, decrement kMargin
 	/* if arp.kMargin > 1 { */
 	/* 	arp.kMargin-- */
 	/* 	arp.logger.Info("timeout unlocked, decrementing kMargin", "fr", fr, "kMargin", arp.kMargin) */

@@ -43,7 +43,7 @@ func TestStartWithSLO(t *testing.T) {
 			if timeout < rttD {
 				time.Sleep(timeout)
 				logger.Error("timeout exceeded", "rto", timeout, "rrtD", rttD.String())
-				rttCh <- rto.DeadlineExceeded
+				rttCh <- -timeout
 				wg.Done()
 			} else {
 				time.Sleep(rttD)
@@ -65,7 +65,7 @@ func TestStartWithSLO(t *testing.T) {
 			if timeout < rttD {
 				time.Sleep(timeout)
 				logger.Error("timeout exceeded", "rto", timeout, "rrtD", rttD.String())
-				rttCh <- rto.DeadlineExceeded
+				rttCh <- -timeout
 				wg.Done()
 			} else {
 				time.Sleep(rttD)
@@ -87,7 +87,7 @@ func TestStartWithSLO(t *testing.T) {
 			if timeout < rttD {
 				time.Sleep(timeout)
 				logger.Error("timeout exceeded", "rto", timeout, "rrtD", rttD.String())
-				rttCh <- rto.DeadlineExceeded
+				rttCh <- -timeout
 				wg.Done()
 			} else {
 				time.Sleep(rttD)

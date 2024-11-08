@@ -179,7 +179,7 @@ func (arp *AdaptoRTOProvider) calcFailureRate() int64 {
 		return arp.fr
 	}
 	// if previous arp.fr is too high, it takes time for fr to be adjusted
-	// so new fr should be waited more
+	// so new fr should be weighted more
 	arp.fr = fr - ((arp.fr + fr) >> ALPHA_SCALING)
 	return arp.fr
 }

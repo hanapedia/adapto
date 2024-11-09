@@ -43,6 +43,7 @@ type Config struct {
 	SLO      float64       // target failure rate SLO
 	Capacity int64         // capacity given as requests per second
 	Interval time.Duration // interval for failure rate calculations
+	KMargin  int64         // starting kMargin for with SLO and static kMargin for without SLO
 
 	Logger logger.Logger // optional logger
 }
@@ -119,13 +120,17 @@ func NewAdaptoRTOProvider(config Config) *AdaptoRTOProvider {
 	if l == nil {
 		l = logger.NewDefaultLogger()
 	}
+	kMargin := config.KMargin
+	if kMargin == 0 {
+		kMargin = DEFAULT_K_MARGIN
+	}
 	return &AdaptoRTOProvider{
 		logger:  l,
 		timeout: config.Max,
 
 		srtt:    0,
 		rttvar:  0,
-		kMargin: DEFAULT_K_MARGIN,
+		kMargin: kMargin,
 		backoff: DEFAULT_BACKOFF,
 
 		minRtt: config.Max,
@@ -135,7 +140,7 @@ func NewAdaptoRTOProvider(config Config) *AdaptoRTOProvider {
 		failed: 0,
 
 		requestLimt: config.Capacity * config.Interval.Milliseconds() / 1000,
-		sloAdjusted: int64(config.SLO * float64(FR_SCALING)) >> LOG2_SLO_SAFETY_MARGIN,
+		sloAdjusted: int64(config.SLO*float64(FR_SCALING)) >> LOG2_SLO_SAFETY_MARGIN,
 
 		rttCh:    make(chan RttSignal),
 		id:       config.Id,

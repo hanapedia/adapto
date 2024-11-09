@@ -49,6 +49,9 @@ type Config struct {
 }
 
 func (c *Config) Validate() error {
+	if c.Logger == nil {
+		c.Logger = logger.NewDefaultLogger()
+	}
 	if c.Id == "" {
 		return fmt.Errorf("Id is required")
 	}
@@ -185,7 +188,7 @@ func (arp *AdaptoRTOProvider) calcFailureRate() int64 {
 	}
 	// if previous arp.fr is too high, it takes time for fr to be adjusted
 	// so new fr should be weighted more
-	arp.fr = fr - ((arp.fr + fr) >> ALPHA_SCALING)
+	arp.fr = max(fr-((arp.fr+fr)>>ALPHA_SCALING), 0)
 	return arp.fr
 }
 

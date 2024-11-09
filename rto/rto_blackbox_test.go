@@ -12,13 +12,13 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func TestStartWithSLO(t *testing.T) {
+func TestStartWithOutSLO(t *testing.T) {
 	logger := logger.NewDefaultLogger()
 	config := rto.Config{
 		Id:       "test1",
 		Max:      5 * time.Second,
 		Min:      1 * time.Millisecond,
-		SLO:      0.01,
+		SLO:      0,
 		Capacity: 1000,
 		Interval: 1 * time.Second,
 	}
@@ -87,6 +87,95 @@ func TestStartWithSLO(t *testing.T) {
 			if timeout < rttD {
 				time.Sleep(timeout)
 				logger.Error("timeout exceeded", "rto", timeout, "rrtD", rttD.String())
+				rttCh <- -timeout
+				wg.Done()
+			} else {
+				time.Sleep(rttD)
+				rttCh <- rttD
+				wg.Done()
+			}
+		}(rtt)
+	}
+
+	wg.Wait()
+}
+
+
+func TestStartWithSLO(t *testing.T) {
+	logger := logger.NewDefaultLogger()
+	config := rto.Config{
+		Id:       "test1",
+		Max:      5 * time.Second,
+		Min:      1 * time.Millisecond,
+		SLO:      0.01,
+		Capacity: 1000,
+		Interval: 1 * time.Second,
+	}
+
+	normalRps := 800
+	normalInterval := 1 * time.Second / time.Duration(normalRps)
+	normalRtts := generateParetoSamples(5000, 5.0, 5)
+
+	abnormalRps := 1500
+	abnormalInterval := 1 * time.Second / time.Duration(abnormalRps)
+	abnormalRtts := generateParetoSamples(2000, 5.0, 1.5)
+
+	var wg sync.WaitGroup
+
+	for _, rtt := range normalRtts {
+		time.Sleep(normalInterval)
+		wg.Add(1)
+		go func(rtt float64) {
+			timeout, rttCh, err := rto.GetTimeout(config)
+			assert.NoError(t, err, "Error should be nil for GetTimeout")
+			rttD := time.Duration(rtt) * time.Millisecond
+			if timeout < rttD {
+				time.Sleep(timeout)
+				/* logger.Error("timeout exceeded", "rto", timeout, "rrtD", rttD.String()) */
+				rttCh <- -timeout
+				wg.Done()
+			} else {
+				time.Sleep(rttD)
+				rttCh <- rttD
+				wg.Done()
+			}
+		}(rtt)
+	}
+
+	logger.Info("<--------------------------Beginning of Abnormal Load-------------------------->")
+
+	for _, rtt := range abnormalRtts {
+		time.Sleep(abnormalInterval)
+		wg.Add(1)
+		go func(rtt float64) {
+			timeout, rttCh, err := rto.GetTimeout(config)
+			assert.NoError(t, err, "Error should be nil for GetTimeout")
+			rttD := time.Duration(rtt) * time.Millisecond
+			if timeout < rttD {
+				time.Sleep(timeout)
+				/* logger.Error("timeout exceeded", "rto", timeout, "rrtD", rttD.String()) */
+				rttCh <- -timeout
+				wg.Done()
+			} else {
+				time.Sleep(rttD)
+				rttCh <- rttD
+				wg.Done()
+			}
+		}(rtt)
+	}
+
+	logger.Info("<--------------------------End of Abnormal Load-------------------------->")
+
+	for _, rtt := range normalRtts {
+		time.Sleep(normalInterval)
+		wg.Add(1)
+		go func(rtt float64) {
+			timeout, rttCh, err := rto.GetTimeout(config)
+			assert.NoError(t, err, "Error should be nil for GetTimeout")
+			rttD := time.Duration(rtt) * time.Millisecond
+			if timeout < rttD {
+				time.Sleep(timeout)
+				/* logger.Error("timeout exceeded", "rto", timeout, "rrtD", rttD.String()) */
 				rttCh <- -timeout
 				wg.Done()
 			} else {

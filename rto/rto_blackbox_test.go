@@ -114,7 +114,7 @@ func TestStartWithSLO(t *testing.T) {
 
 	normalRps := 800
 	normalInterval := 1 * time.Second / time.Duration(normalRps)
-	normalRtts := generateParetoSamples(5000, 5.0, 5)
+	normalRtts := generateParetoSamples(50000, 5.0, 5)
 
 	abnormalRps := 1500
 	abnormalInterval := 1 * time.Second / time.Duration(abnormalRps)

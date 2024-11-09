@@ -182,13 +182,10 @@ func (arp *AdaptoRTOProvider) calcFailureRate() int64 {
 	}
 	fr := arp.failed * FR_SCALING / arp.res
 	arp.logger.Info("computing fr", "failed", arp.failed, "fr", fr, "arp.fr", arp.fr)
-	if arp.fr == 0 {
-		arp.fr = fr
-		return arp.fr
-	}
 	// if previous arp.fr is too high, it takes time for fr to be adjusted
-	// so new fr should be weighted more
-	arp.fr = max(fr-((arp.fr+fr)>>ALPHA_SCALING), 0)
+	// so new fr should be weighted more. for simplicity, weight the new fr equal to all previous fr
+	// so essentially it is taking the mean between previous mean and new value
+	arp.fr = (arp.fr+fr)>>1
 	return arp.fr
 }
 

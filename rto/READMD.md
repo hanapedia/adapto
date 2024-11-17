@@ -35,9 +35,7 @@ This version of RTO will monitor how many requests have failed in the interval. 
 The assumption is that the overload happens due to the increase in the load, so periodic calculation of failure rate will not be soon enough. So the failure rate should be refreshed based on the load. When the load is stable, it is okay to be calculated at some interval. 
 
 When updating the RTO value upon encoutering timeout, the previously computed failure rate should be referenced to decide how to update the RTO value. The WIP decision tree for RTO value update is as follows:
-- if failure rate is **over the acceptable SLO target**, the RTO will be reduced to best case RTO where RTO is computed with *minimum RTT*. in order to conserve the latency target and hopefully remediate overload.
-- if failrue rate is **over some fraction of SLO target**, the RTO will be incremented conservatively.
-- if failure rate is **in the safe range**, the RTO will be doubled as normal. (and possibly request is retried(WIP))
+- if failure rate is **over the fraction (1/2) acceptable SLO target**, the RTO will be reduced to best case RTO where RTO is computed with *minimum RTT*. in order to conserve the latency target and hopefully remediate overload.
 
 #### Parameters
 - Capacity (static for now) in Requests per second
@@ -54,14 +52,28 @@ When the service is not under overload, this version of RTO will try to find the
 - RTO = srtt + margin * K * rttvar, (where K = 4, as defined by Jacobson)
 - margin should be integer for simplicity. (for now) (could be left for future optimization)
 
+## When latency needs to be prioritized
+Given an SLO such as *X*% of carried requests must complete within *Y*ms. And it is more important than failure rate. e.g. services such as trading and real time communication apps where completing the task in time is more valuable than completing the task.
+
+This can be implemented using 2 timeouts, soft and hard
+- after *Y*ms and response has not been returned, it will check if there is enough room in the error budget, in other words, it checks if allowing this request to wait longer still complies with *X* of requests being complete within *Y*ms.
+    - if it is ok, do not cancel the request and wait until hard timeout
+    - if it is not ok, cancel the request 
+
+## When failure rate needs to be prioritized 
+
 ## Configuration parameters
-- max: maximum timeout value allowed
-- min: minimum timeout value allowed
-- margin (K in the equation): multiplication factor applied for maximum deviation allowed. defaults to 4.
-- backoff: multiplication factor applied to RTO when timeout occurs. defaults to 2.
+```go
+type Config struct {
+	Id       string
+	Max      time.Duration // max timeout value allowed
+	Min      time.Duration // min timeout value allowed
+	SLO      float64       // target failure rate SLO
+	Capacity int64         // capacity given as requests per second
+	Interval time.Duration // interval for failure rate calculations
+	KMargin  int64         // starting kMargin for with SLO and static kMargin for without SLO
 
-Not included in the first iteration
-- alpha: left for future adjustment
-- beta: left for future adjustment
-
+	Logger logger.Logger // optional logger
+}
+```
 

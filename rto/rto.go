@@ -230,7 +230,7 @@ func (arp *AdaptoRTOProvider) onRequestLimit() {
 // onInterval calculates failure rate and adjusts margin
 // this should be the only way margin is mutated
 // should unlock rto updates
-// TODO: if the interval was to be set at 1 second,
+// DONE(v1.0.19): if the interval was to be set at 1 second,
 // it could be better to look at long term average failure rate because there won't be much samples
 // so we could use the similar algorithm as RTO
 func (arp *AdaptoRTOProvider) onInterval() {

@@ -308,6 +308,7 @@ func (arp *AdaptoRTOProvider) NewTimeout() (timeout time.Duration, rttCh chan<- 
 	arp.mu.Lock()
 	defer arp.mu.Unlock()
 	arp.onRequest() // increment req
+	arp.logger.Info("New timeout created.", "inflight", arp.inflight(), "timeout", arp.timeout)
 	return arp.timeout, arp.rttCh
 }
 

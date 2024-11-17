@@ -181,7 +181,7 @@ func (arp *AdaptoRTOProvider) calcFailureRate() int64 {
 		return 0
 	}
 	fr := arp.failed * FR_SCALING / arp.res
-	arp.logger.Info("computing fr", "failed", arp.failed, "fr", fr, "arp.fr", arp.fr)
+	/* arp.logger.Info("computing fr", "failed", arp.failed, "fr", fr, "arp.fr", arp.fr) */
 	// if previous arp.fr is too high, it takes time for fr to be adjusted
 	// so new fr should be weighted more. for simplicity, weight the new fr equal to all previous fr
 	// so essentially it is taking the mean between previous mean and new value
@@ -308,7 +308,7 @@ func (arp *AdaptoRTOProvider) NewTimeout() (timeout time.Duration, rttCh chan<- 
 	arp.mu.Lock()
 	defer arp.mu.Unlock()
 	arp.onRequest() // increment req
-	arp.logger.Info("New timeout created.", "inflight", arp.inflight(), "timeout", arp.timeout)
+	arp.logger.Info("New timeout created.", "inflight", arp.inflight(), "timeout", arp.timeout, "fr", arp.calcFailureRate())
 	return arp.timeout, arp.rttCh
 }
 

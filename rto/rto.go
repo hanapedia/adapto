@@ -95,9 +95,10 @@ type AdaptoRTOProvider struct {
 	// counters for failure rate and inflight
 	// inflight should be computed by req - recv
 	// failure rate should be computed by failed / recv
-	req    int64 // number of requests sent
-	res    int64 // number of responses received
-	failed int64 // number of requests failed
+	req             int64         // number of requests sent
+	res             int64         // number of responses received
+	failed          int64         // number of requests failed
+	inflightTimeout time.Duration //
 
 	// mutex for synchronizing access to timeout calculation fields
 	mu sync.Mutex
@@ -185,7 +186,7 @@ func (arp *AdaptoRTOProvider) calcFailureRate() int64 {
 	// if previous arp.fr is too high, it takes time for fr to be adjusted
 	// so new fr should be weighted more. for simplicity, weight the new fr equal to all previous fr
 	// so essentially it is taking the mean between previous mean and new value
-	arp.fr = (arp.fr+fr)>>1
+	arp.fr = (arp.fr + fr) >> 1
 	return arp.fr
 }
 
@@ -307,8 +308,11 @@ func GetTimeout(config Config) (timeout time.Duration, rttCh chan<- RttSignal, e
 func (arp *AdaptoRTOProvider) NewTimeout() (timeout time.Duration, rttCh chan<- RttSignal) {
 	arp.mu.Lock()
 	defer arp.mu.Unlock()
+
 	arp.onRequest() // increment req
-	arp.logger.Info("New timeout created.", "inflight", arp.inflight(), "timeout", arp.timeout, "fr", arp.calcFailureRate())
+	if arp.inflight() > 1 {
+		arp.logger.Info("New timeout created.", "inflight", arp.inflight(), "timeout", arp.timeout, "fr", arp.calcFailureRate())
+	}
 	return arp.timeout, arp.rttCh
 }
 

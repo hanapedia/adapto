@@ -310,9 +310,6 @@ func (arp *AdaptoRTOProvider) NewTimeout() (timeout time.Duration, rttCh chan<- 
 	defer arp.mu.Unlock()
 
 	arp.onRequest() // increment req
-	if arp.inflight() > 1 {
-		arp.logger.Info("New timeout created.", "inflight", arp.inflight(), "timeout", arp.timeout, "fr", arp.calcFailureRate())
-	}
 	return arp.timeout, arp.rttCh
 }
 
@@ -320,12 +317,16 @@ func (arp *AdaptoRTOProvider) NewTimeout() (timeout time.Duration, rttCh chan<- 
 // MUST be called in thread safe manner as it does not lock mu
 func (arp *AdaptoRTOProvider) ComputeNewRTO(rtt time.Duration) {
 	if DeadlineExceeded(rtt) {
+		if arp.inflight() > 1 {
+			arp.logger.Info("Deadline Exceeded", "inflight", arp.inflight(), "rtt", rtt)
+		}
 		// DONE(v1.0.14): doubling just the rto value might only have effect on the next rto
 		// because as soon as a request succeeds, the rto value is computed with srtt and rttvar prior to timeout.
 		// could possibly adjust rto using the timeout value for this request -> implemented
 		arp.onDeadlineExceeded() // increment failed
 		rtt *= -1
 		arp.logger.Debug("DeadlineExceeded", "rto", arp.timeout.String(), "rtt", rtt)
+
 	}
 
 	if arp.srtt == 0 {

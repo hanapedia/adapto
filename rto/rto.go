@@ -368,12 +368,12 @@ func (arp *AdaptoRTOProvider) StartWithSLO() {
 			arp.mu.Lock()
 			arp.onRtt() // increment res
 			// check if request limit is reached
-			if arp.res >= arp.requestLimt {
-				arp.onRequestLimit()
-				ticker.Reset(arp.interval) // reset ticker as failure rate was computed by request limit
-				arp.mu.Unlock()
-				continue
-			}
+			/* if arp.res >= arp.requestLimt { */
+			/* 	arp.onRequestLimit() */
+			/* 	ticker.Reset(arp.interval) // reset ticker as failure rate was computed by request limit */
+			/* 	arp.mu.Unlock() */
+			/* 	continue */
+			/* } */
 			if !DeadlineExceeded(rtt) {
 				arp.minRtt = min(rtt, arp.minRtt)
 			}

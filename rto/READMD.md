@@ -41,6 +41,7 @@ When updating the RTO value upon encoutering timeout, the previously computed fa
 - **SLO target failure rate**
 - max timeout allowed. **this should be the max latency allowed by SLO**
 - *failure rate calculation interval*
+    - \*this interval should be longer than the max latency allowed.
 
 ## Dynamic Margin Determination
 When the service is not under overload, this version of RTO will try to find the *margin* that will produce acceptable failure rate.

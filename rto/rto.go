@@ -11,17 +11,17 @@ import (
 )
 
 const (
-	DEFAULT_BACKOFF        int64         = 2
-	CONSERVATIVE_BACKOFF   int64         = 1
-	DEFAULT_K_MARGIN       int64         = 1
-	DEFAULT_INTERVAL       time.Duration = 5 * time.Second
-	DEFAULT_SLO            float64       = 0.1
-	ALPHA_SCALING          int64         = 8
-	LOG2_ALPHA             int64         = 3
-	BETA_SCALING           int64         = 4
-	LOG2_BETA              int64         = 2
-	LOG2_SLO_SAFETY_MARGIN int64         = 1    // safety margin of 0.5 or division by 2
-	FR_SCALING             int64         = 10e5 // keep the fr to .000001 precision
+	DEFAULT_BACKOFF      int64         = 2
+	CONSERVATIVE_BACKOFF int64         = 1
+	DEFAULT_K_MARGIN     int64         = 1
+	DEFAULT_INTERVAL     time.Duration = 5 * time.Second
+	DEFAULT_SLO          float64       = 0.1
+	ALPHA_SCALING        int64         = 8
+	LOG2_ALPHA           int64         = 3
+	BETA_SCALING         int64         = 4
+	LOG2_BETA            int64         = 2
+	SLO_SAFETY_MARGIN    float64       = 0.5 // safety margin of 0.5 or division by 2
+	MIN_FAILED_SAMPLES   float64       = 2
 )
 
 // DONE(v1.0.14): consider the raional of using negative duration for timedout requests
@@ -87,10 +87,11 @@ type AdaptoRTOProvider struct {
 	// values used in timeout calculations and adjusted dynamically
 	srtt    int64 // smoothed rtt
 	rttvar  int64
-	kMargin int64 // extra margin multiplied to the origin K=4
-	backoff int64 // backoff multiplier
-	fr      int64 // cumulative failure rate computed as moving average. scaled by FR_SCALING
-	srto    int64 // smoothed rto
+	kMargin int64   // extra margin multiplied to the origin K=4
+	backoff int64   // backoff multiplier
+	sfr     float64 // smoothed failure rate computed as moving average.
+	lastFr  float64 // most recent failure rate
+	srto    int64   // smoothed rto
 
 	// keep track of minimum RTT to fallback to
 	minRtt time.Duration
@@ -99,10 +100,12 @@ type AdaptoRTOProvider struct {
 	// inflight should be computed by req - recv
 	// failure rate should be computed by failed / recv
 	// these counters are cleared per interval
-	req         int64 // number of requests sent
-	res         int64 // number of responses received
-	failed      int64 // number of requests failed
-	overloadReq int64 // number of requests sent for the interval that caused state transition from NORMAL to OVERLOAD
+	req           int64 // number of requests sent
+	res           int64 // number of responses received
+	failed        int64 // number of requests failed
+	carry         int64 // carry over from previous interval
+	overloadReq   int64 // number of requests sent for the interval that caused state transition from NORMAL to OVERLOAD
+	lastNormalReq int64 // req from most recent normal interval
 
 	// mutex for synchronizing access to timeout calculation fields
 	mu sync.Mutex
@@ -111,7 +114,9 @@ type AdaptoRTOProvider struct {
 	// in the event of timeout, sender should send `DeadlineExceeded` signal
 	rttCh chan RttSignal
 
-	sloFailureRateAdjusted int64 // slo with safety margin. also scaled to integer
+	sloFailureRateAdjusted float64 // slo with safety margin.
+	minSamplesRequired     float64 // minimum samples required to compute failure rate
+	sfrWeight              float64
 
 	// configuration fields
 	id             string
@@ -146,7 +151,9 @@ func NewAdaptoRTOProvider(config Config) *AdaptoRTOProvider {
 		res:    0,
 		failed: 0,
 
-		sloFailureRateAdjusted: int64(config.SLOFailureRate*float64(FR_SCALING)) >> LOG2_SLO_SAFETY_MARGIN,
+		sloFailureRateAdjusted: config.SLOFailureRate * SLO_SAFETY_MARGIN,
+		minSamplesRequired:     MIN_FAILED_SAMPLES / (config.SLOFailureRate * SLO_SAFETY_MARGIN),
+		sfrWeight:              float64(time.Minute / config.Interval), // 1 min / interval
 
 		rttCh:          make(chan RttSignal),
 		id:             config.Id,
@@ -157,27 +164,12 @@ func NewAdaptoRTOProvider(config Config) *AdaptoRTOProvider {
 	}
 }
 
-// failureRate calculates failure rate for the current interval.
-// returns fr scaled by FR_SCALING
-// MUST be called in thread safe manner as it does not lock mu
-func (arp *AdaptoRTOProvider) calcFailureRate() int64 {
-	if arp.res == 0 {
-		return 0
-	}
-	fr := arp.failed * FR_SCALING / arp.res
-	/* arp.logger.Info("computing fr", "failed", arp.failed, "fr", fr, "arp.fr", arp.fr) */
-	// if previous arp.fr is too high, it takes time for fr to be adjusted
-	// so new fr should be weighted more. for simplicity, weight the new fr equal to all previous fr
-	// so essentially it is taking the mean between previous mean and new value
-	arp.fr = (arp.fr + fr) >> 1
-	return arp.fr
-}
-
 // resetCounters resets counters
 // req counter is reset to whatever the inflight was at this moment
 func (arp *AdaptoRTOProvider) resetCounters() {
 	// reset counters
-	arp.req = arp.inflight()
+	arp.carry = arp.inflight()
+	arp.req = 0
 	arp.res = 0
 	arp.failed = 0
 }
@@ -233,6 +225,7 @@ func (arp *AdaptoRTOProvider) onRtt(rtt time.Duration) {
 }
 
 // onInterval calculates failure rate and adjusts margin
+// failure rate for the interval is computed only if there were enough samples. if not interval exits.
 // if the main state machine is in NORMAL state:
 //   - if failure rate is higher than the sloAdjusted, kMargin is incremented
 //   - if failure rate is lower than the sloAdjusted, kMargin is multiplied by (srtt + srto) / (2*srto)
@@ -247,28 +240,52 @@ func (arp *AdaptoRTOProvider) onRtt(rtt time.Duration) {
 // NOTE: this should be the only way margin is mutated
 // NOTE: the state transition NORMAL -> OVERLOAD is not handled here
 func (arp *AdaptoRTOProvider) onInterval() {
-	fr := arp.calcFailureRate() // compute failure rate
-	defer arp.resetCounters()   // reset counters each interval
+	// account for the carry. use the previous failure rate to ESTIMATE the failed from for the carry
+	resAdjusted := arp.res - arp.carry
+	failedAdjusted := float64(arp.failed) - arp.lastFr*float64(arp.carry)
+
+	// check if there were enough samples in the interval
+	if resAdjusted <= int64(math.Round(arp.minSamplesRequired)) {
+		arp.logger.Info("not enough samples", "resAdjusted", resAdjusted, "minSamplesRequired", arp.minSamplesRequired)
+		return // do not reset counters
+	}
+	defer arp.resetCounters() // reset counters each interval
+
+	fr := failedAdjusted / float64(resAdjusted) // failure rate for current interval
+	arp.lastFr = fr                             // update previous failure rate
+	if arp.sfr == 0 {
+		// first observation of fr
+		arp.sfr = fr
+	} else {
+		// compute smoothing weight by 1 min / interval, so it resembles something close to 1 min smoothing
+		// update sfr only using fr from NORMAL state
+		if arp.state == NORMAL {
+			arp.sfr = arp.sfr + (fr-arp.sfr)/arp.sfrWeight
+		}
+	}
+	arp.logger.Info("failure rate computed", "fr", fr, "sfr", arp.sfr)
 
 	// handle NORMAL state
 	if arp.state == NORMAL {
+		defer func() {
+			// continuously update prevReq in NORMAL state
+			arp.lastNormalReq = arp.req
+		}()
+		// TODO: how to effectively decrement kMargin
+		// if the fr for this interval is below threshold, must increment kMargin
 		if fr >= arp.sloFailureRateAdjusted {
 			arp.kMargin++
 			arp.logger.Info("incrementing kMargin", "fr", fr, "sloAdjusted", arp.sloFailureRateAdjusted, "kMargin", arp.kMargin)
 		} else {
-			if arp.srto == 0 {
-				arp.logger.Info("srto is 0. skipping kMargin update")
-				return
-			}
-			shrinkFactor := float64(arp.srtt+9*arp.srto) / float64(10*arp.srto)
-			kMargin :=int64(math.Ceil((float64(arp.kMargin) * shrinkFactor)))
-			if kMargin < arp.kMargin {
-				arp.kMargin = kMargin
-				arp.logger.Info("shrinking kMargin", "fr", fr, "sloAdjusted", arp.sloFailureRateAdjusted, "kMargin", arp.kMargin, "shrinkFactor", shrinkFactor)
+			// if the smoothed fr is well over threshold, try decrementing kMargin
+			if arp.sfr < arp.sloFailureRateAdjusted {
+				arp.kMargin--
+				arp.logger.Info("shrinking kMargin", "sfr", arp.sfr, "sloAdjusted", arp.sloFailureRateAdjusted, "kMargin", arp.kMargin)
 			}
 		}
 		return
 	}
+
 	// handle OVERLOAD state
 	if arp.overloadReq == 0 {
 		// first interval after overload was declared
@@ -276,10 +293,10 @@ func (arp *AdaptoRTOProvider) onInterval() {
 		return
 	}
 	// TODO: should consider if this threshold is rationale
-	// TEST: 0.875 * overloadReq
-	if arp.overloadReq - arp.overloadReq >> LOG2_ALPHA < arp.req {
+	// TEST: record last req before overload start, and use the average as threshold
+	if arp.overloadReq+arp.lastNormalReq>>2 < arp.req {
 		// stil in overload
-		arp.logger.Info("still in overload", "overloadReq", arp.overloadReq, "req", arp.req)
+		arp.logger.Info("still in overload", "overloadReq", arp.overloadReq, "lastNormalReq", arp.lastNormalReq, "req", arp.req)
 		return
 	}
 	// undeclare overload

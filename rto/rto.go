@@ -193,7 +193,7 @@ func (arp *AdaptoRTOProvider) ChokeTimeout() {
 
 // onRtt handles new rtt event
 // increments counter
-// if max timeout is breached, declares overload
+// if max timeout is breached, declares overload for new rtt
 // else computes the new timeout for the rtt
 // MUST be called in thread safe manner as it does not lock mu
 func (arp *AdaptoRTOProvider) onRtt(rtt time.Duration) {
@@ -211,17 +211,7 @@ func (arp *AdaptoRTOProvider) onRtt(rtt time.Duration) {
 		return
 	}
 
-	// check if max timeout was not breachd
-	if rtt == arp.max {
-		// declare overload
-		arp.ChokeTimeout()
-		arp.state = OVERLOAD
-		arp.logger.Info("overload detected", "rto", arp.timeout, "minRtt", arp.minRtt)
-		return
-	}
-
 	arp.ComputeNewRTO(rtt)
-
 }
 
 // onInterval calculates failure rate and adjusts margin
@@ -374,6 +364,14 @@ func (arp *AdaptoRTOProvider) ComputeNewRTO(rtt time.Duration) {
 	arp.rttvar = rttvar
 	arp.srto += int64(arp.timeout) - (arp.srto >> LOG2_ALPHA) // use same update as srtt in jacobsonCalc
 	arp.logger.Debug("new RTO computed", "rto", arp.timeout.String(), "rtt", rtt.String())
+
+	// check if max timeout was not breachd
+	if arp.timeout == arp.max {
+		// declare overload
+		arp.ChokeTimeout()
+		arp.state = OVERLOAD
+		arp.logger.Info("overload detected", "rto", arp.timeout, "minRtt", arp.minRtt)
+	}
 }
 
 // StartWithSLO starts the provider by spawning a goroutine that waits for new rtt or timeout event and updates the timeout value accordingly. timeout calculations are also adjusted to meet the SLO

@@ -260,9 +260,12 @@ func (arp *AdaptoRTOProvider) onInterval() {
 				arp.logger.Info("srto is 0. skipping kMargin update")
 				return
 			}
-			shrinkFactor := float64(arp.srtt+7*arp.srto) / float64(8*arp.srto)
-			arp.kMargin = int64(math.Round((float64(arp.kMargin) * shrinkFactor)))
-			arp.logger.Info("shrinking kMargin", "fr", fr, "sloAdjusted", arp.sloFailureRateAdjusted, "kMargin", arp.kMargin, "shrinkFactor", shrinkFactor)
+			shrinkFactor := float64(arp.srtt+9*arp.srto) / float64(10*arp.srto)
+			kMargin :=int64(math.Ceil((float64(arp.kMargin) * shrinkFactor)))
+			if kMargin < arp.kMargin {
+				arp.kMargin = kMargin
+				arp.logger.Info("shrinking kMargin", "fr", fr, "sloAdjusted", arp.sloFailureRateAdjusted, "kMargin", arp.kMargin, "shrinkFactor", shrinkFactor)
+			}
 		}
 		return
 	}
@@ -273,7 +276,8 @@ func (arp *AdaptoRTOProvider) onInterval() {
 		return
 	}
 	// TODO: should consider if this threshold is rationale
-	if arp.overloadReq < arp.req {
+	// TEST: 0.875 * overloadReq
+	if arp.overloadReq - arp.overloadReq >> LOG2_ALPHA < arp.req {
 		// stil in overload
 		arp.logger.Info("still in overload", "overloadReq", arp.overloadReq, "req", arp.req)
 		return

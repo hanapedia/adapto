@@ -59,14 +59,17 @@ Therefore, the capacity breach must be detected at runtime. An easy way to do th
 The detection step is outlined as follows:
 - at *normal operating state*:
     - for each response or timeout event, new timeout is computed based on the latency or the timeout value.
+        - both smoothed rtt and rto is tracked
     - also, for each *failure rate calculation interval*, kMargin is adjusted.
-        - for each interval record the current *load (rps)* in ring buffer with length of 1 min / *failure rate calculation interval*.
+        - if failure rate requirement is not met, increment
+        - else if multiply by (srto + srtt) / (2 * srto) and round down
     - if the max timeout value is given **once**, it enters *high load operating state*
         - when this happens, the *load (rps)* for the current *failure rate calculation interval* should be saved.
         - the rationale of using 1 timeout event of max timeout for detection should be discussed in the future.
 - at *high load operating state*:
-    - timeout is choked to the value computed by min latency
+    - timeout is locked at the value computed by min latency.
     - at each *failure rate calculation interval*, current load should be checked to see if the load has subsided
+        - kmargin should be locked
 
 ## Configuration parameters
 ```go

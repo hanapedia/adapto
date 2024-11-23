@@ -38,29 +38,35 @@ When updating the RTO value upon encoutering timeout, the previously computed fa
 - if failure rate is **over the fraction (1/2) acceptable SLO target**, the RTO will be reduced to best case RTO where RTO is computed with *minimum RTT*. in order to conserve the latency target and hopefully remediate overload.
 
 #### Parameters
-- Capacity (static for now) in Requests per second
-    - N: Number of requests to calculate the new failure rate
-    - T: Fallback time interval to calculate the new failure rate. could be given by the users. sane default is some fraction of metrics scrape interval by external telemetry
-    - capacity = N / T
-    - these could be set dynamically based on capacity estimation (in the future work)
-    - e.g. Capacity = 150rps, T = 5s (1/3 prometheus scrape interval), N = 750
 - **SLO target failure rate**
-- Safe range defined by Fraction of SLO target* could be defined by the users as their preference
+- max timeout allowed. **this should be the max latency allowed by SLO**
+- *failure rate calculation interval*
 
 ## Dynamic Margin Determination
 When the service is not under overload, this version of RTO will try to find the *margin* that will produce acceptable failure rate.
 - RTO = srtt + margin * K * rttvar, (where K = 4, as defined by Jacobson)
 - margin should be integer for simplicity. (for now) (could be left for future optimization)
 
-## When latency needs to be prioritized
-Given an SLO such as *X*% of carried requests must complete within *Y*ms. And it is more important than failure rate. e.g. services such as trading and real time communication apps where completing the task in time is more valuable than completing the task.
+## Dynamic capacity breach detection
+When the load approaches the server capacity, the timeout duration should be shortened to reduce the queue length on the server, meaning that the timeout adjustment pattern changes based on whether the load is below or above the capacity.
+Implementations up to v1.0.20 used static capacity parameter to set the threshold on requests per second, however, this approach is problamatic for few reasons.
+- capacity can be dynamic in microservices due to continuous and independent scaling
+- capacity cannot be client defined because a single client is not aware of other clients that access the same server
+- even if there were some "true" capacity, knowing capacity in advance would require significant effort in load testing, which defeats the part of the purpose of adaptive timeout
 
-This can be implemented using 2 timeouts, soft and hard
-- after *Y*ms and response has not been returned, it will check if there is enough room in the error budget, in other words, it checks if allowing this request to wait longer still complies with *X* of requests being complete within *Y*ms.
-    - if it is ok, do not cancel the request and wait until hard timeout
-    - if it is not ok, cancel the request 
+Therefore, the capacity breach must be detected at runtime. An easy way to do this is to observe the past generated timeout and the failure rate. If the adaptive timeout has been elongated to the max duration allowed but the failure rate continues to grow, it could be an indicator that the load is past the capacity.
 
-## When failure rate needs to be prioritized 
+The detection step is outlined as follows:
+- at *normal operating state*:
+    - for each response or timeout event, new timeout is computed based on the latency or the timeout value.
+    - also, for each *failure rate calculation interval*, kMargin is adjusted.
+        - for each interval record the current *load (rps)* in ring buffer with length of 1 min / *failure rate calculation interval*.
+    - if the max timeout value is given **once**, it enters *high load operating state*
+        - when this happens, the *load (rps)* for the current *failure rate calculation interval* should be saved.
+        - the rationale of using 1 timeout event of max timeout for detection should be discussed in the future.
+- at *high load operating state*:
+    - timeout is choked to the value computed by min latency
+    - at each *failure rate calculation interval*, current load should be checked to see if the load has subsided
 
 ## Configuration parameters
 ```go
@@ -69,7 +75,6 @@ type Config struct {
 	Max      time.Duration // max timeout value allowed
 	Min      time.Duration // min timeout value allowed
 	SLO      float64       // target failure rate SLO
-	Capacity int64         // capacity given as requests per second
 	Interval time.Duration // interval for failure rate calculations
 	KMargin  int64         // starting kMargin for with SLO and static kMargin for without SLO
 

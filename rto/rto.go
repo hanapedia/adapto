@@ -179,7 +179,7 @@ func (arp *AdaptoRTOProvider) resetCounters() {
 // ref: https://blog.cloudflare.com/counting-things-a-lot-of-different-things/
 // should lock rto updates
 func (arp *AdaptoRTOProvider) CurrentReq() int64 {
-	previousReqEstimate := float64(arp.lastNormalReq) * float64(arp.interval - time.Since(arp.intervalStart)) / float64(arp.interval)
+	previousReqEstimate := float64(arp.lastNormalReq) * float64(arp.interval-time.Since(arp.intervalStart)) / float64(arp.interval)
 	arp.logger.Info("current rate computed",
 		"req", arp.req,
 		"lastNormalReq", arp.lastNormalReq,
@@ -370,13 +370,14 @@ func (arp *AdaptoRTOProvider) ComputeNewRTO(rtt time.Duration) {
 	}
 
 	rto, srtt, rttvar := jacobsonCalc(int64(rtt), arp.srtt, arp.rttvar, arp.kMargin)
+	rtoD := time.Duration(rto)
 	// check if max timeout was not breachd
-	if time.Duration(rto) >= arp.max {
+	if rtoD >= arp.max {
 		// declare overload
 		arp.ChokeTimeout()
 		arp.state = OVERLOAD
 		arp.overloadReq = arp.CurrentReq()
-		arp.logger.Info("overload detected", "rto", arp.timeout, "minRtt", arp.minRtt, "overloadReq", arp.overloadReq)
+		arp.logger.Info("overload detected", "rto", rtoD, "chokedRto", arp.timeout, "minRtt", arp.minRtt, "overloadReq", arp.overloadReq)
 		return
 	}
 

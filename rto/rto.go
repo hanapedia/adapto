@@ -179,7 +179,7 @@ func (arp *AdaptoRTOProvider) resetCounters() {
 // ref: https://blog.cloudflare.com/counting-things-a-lot-of-different-things/
 // should lock rto updates
 func (arp *AdaptoRTOProvider) CurrentReq() int64 {
-	previousReqEstimate := float64(arp.lastNormalReq) * float64(time.Since(arp.intervalStart)) / float64(arp.interval)
+	previousReqEstimate := float64(arp.lastNormalReq) * float64(arp.interval - time.Since(arp.intervalStart)) / float64(arp.interval)
 	arp.logger.Info("current rate computed",
 		"req", arp.req,
 		"lastNormalReq", arp.lastNormalReq,

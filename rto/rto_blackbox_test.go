@@ -108,7 +108,7 @@ func TestStartWithSLO(t *testing.T) {
 	logger := logger.NewDefaultLogger()
 	config := rto.Config{
 		Id:             "test1",
-		Max:            50 * time.Millisecond,
+		Max:            100 * time.Millisecond,
 		Min:            1 * time.Millisecond,
 		SLOFailureRate: 0.01,
 		Interval:       5 * time.Second,

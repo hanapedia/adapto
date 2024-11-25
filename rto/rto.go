@@ -180,6 +180,13 @@ func (arp *AdaptoRTOProvider) resetCounters() {
 // should lock rto updates
 func (arp *AdaptoRTOProvider) CurrentReq() int64 {
 	previousReqEstimate := float64(arp.lastNormalReq) * float64(time.Since(arp.intervalStart)) / float64(arp.interval)
+	arp.logger.Info("current rate computed",
+		"req", arp.req,
+		"lastNormalReq", arp.lastNormalReq,
+		"previousReqEstimate", previousReqEstimate,
+		"sinceIntervalStart", time.Since(arp.intervalStart),
+		"durationRatio", float64(time.Since(arp.intervalStart))/float64(arp.interval),
+	)
 	return int64(math.Round(previousReqEstimate)) + arp.req
 }
 

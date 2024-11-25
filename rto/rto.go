@@ -238,12 +238,8 @@ func (arp *AdaptoRTOProvider) onRtt(rtt time.Duration) {
 // NOTE: this should be the only way margin is mutated
 // NOTE: the state transition NORMAL -> OVERLOAD is not handled here
 func (arp *AdaptoRTOProvider) onInterval() {
-	// schedule per interval tasks
+	// record next interval start
 	defer func() {
-		if arp.state == NORMAL {
-			arp.lastNormalReq = arp.req
-		}
-		arp.resetCounters() // reset counters each interval
 		arp.intervalStart = time.Now()
 	}()
 
@@ -256,6 +252,7 @@ func (arp *AdaptoRTOProvider) onInterval() {
 		arp.logger.Info("not enough samples", "resAdjusted", resAdjusted, "minSamplesRequired", arp.minSamplesRequired)
 		return // do not reset counters
 	}
+	defer arp.resetCounters() // reset counters each interval
 
 	fr := failedAdjusted / float64(resAdjusted) // failure rate for current interval
 	arp.lastFr = fr                             // update previous failure rate
@@ -273,6 +270,7 @@ func (arp *AdaptoRTOProvider) onInterval() {
 
 	// handle NORMAL state
 	if arp.state == NORMAL {
+		arp.lastNormalReq = arp.req
 		// TODO: how to effectively decrement kMargin
 		// if the fr for this interval is below threshold, must increment kMargin
 		if fr >= arp.sloFailureRateAdjusted {

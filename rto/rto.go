@@ -363,19 +363,21 @@ func (arp *AdaptoRTOProvider) ComputeNewRTO(rtt time.Duration) {
 	}
 
 	rto, srtt, rttvar := jacobsonCalc(int64(rtt), arp.srtt, arp.rttvar, arp.kMargin)
-	arp.timeout = min(max(time.Duration(rto), arp.min), arp.max)
-	arp.srtt = srtt
-	arp.rttvar = rttvar
-	arp.logger.Debug("new RTO computed", "rto", arp.timeout.String(), "rtt", rtt.String())
-
 	// check if max timeout was not breachd
-	if arp.timeout == arp.max {
+	if time.Duration(rto) >= arp.max {
 		// declare overload
 		arp.ChokeTimeout()
 		arp.state = OVERLOAD
 		arp.overloadReq = arp.CurrentReq()
 		arp.logger.Info("overload detected", "rto", arp.timeout, "minRtt", arp.minRtt, "overloadReq", arp.overloadReq)
+		return
 	}
+
+	// do not update these values when overload is detected
+	arp.timeout = max(time.Duration(rto), arp.min) // no need to check for max because of early return
+	arp.srtt = srtt
+	arp.rttvar = rttvar
+	arp.logger.Debug("new RTO computed", "rto", arp.timeout.String(), "rtt", rtt.String())
 }
 
 // StartWithSLO starts the provider by spawning a goroutine that waits for new rtt or timeout event and updates the timeout value accordingly. timeout calculations are also adjusted to meet the SLO

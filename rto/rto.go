@@ -146,10 +146,12 @@ func NewAdaptoRTOProvider(config Config) *AdaptoRTOProvider {
 		state:   NORMAL,
 		timeout: config.Max,
 
-		// use max for starting timeout.
-		// timeout will be adjusted top-to-down to avoid volatility at startup
-		srtt: int64(config.Max) * ALPHA_SCALING, // use the scaled srtt for Jacobson. R * 8 since alpha = 1/8
-		rttvar: (int64(config.Max) >> 1) * BETA_SCALING, // use the scaled rttvar for Jacobson. (R / 2) * 4 since beta = 1/4
+		// use duration close to max for starting timeout.
+		// so that timeout will be adjusted top-to-down to avoid volatility at startup
+		// adjust so that generated timeout do not exceed max on first generation max > srtt * 4 * srtt / 2 = 3 srtt
+		// round off error can be neglected
+		srtt: int64(config.Max / 3) * ALPHA_SCALING, // use the scaled srtt for Jacobson. R * 8 since alpha = 1/8
+		rttvar: (int64(config.Max / 3) / 2) * BETA_SCALING, // use the scaled rttvar for Jacobson. (R / 2) * 4 since beta = 1/4
 		kMargin: kMargin,
 
 		minRtt: config.Max,

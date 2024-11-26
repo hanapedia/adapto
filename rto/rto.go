@@ -146,8 +146,10 @@ func NewAdaptoRTOProvider(config Config) *AdaptoRTOProvider {
 		state:   NORMAL,
 		timeout: config.Max,
 
-		srtt:    0,
-		rttvar:  0,
+		// use max for starting timeout.
+		// timeout will be adjusted top-to-down to avoid volatility at startup
+		srtt: int64(config.Max) * ALPHA_SCALING, // use the scaled srtt for Jacobson. R * 8 since alpha = 1/8
+		rttvar: (int64(config.Max) >> 1) * BETA_SCALING, // use the scaled rttvar for Jacobson. (R / 2) * 4 since beta = 1/4
 		kMargin: kMargin,
 
 		minRtt: config.Max,
@@ -367,15 +369,6 @@ func (arp *AdaptoRTOProvider) ComputeNewRTO(rtt time.Duration) {
 	// boundary check
 	if rtt < 0 {
 		rtt *= -1
-	}
-	if arp.srtt == 0 {
-		// first observation of rtt
-		arp.srtt = int64(rtt) * ALPHA_SCALING                   // use the scaled srtt for Jacobson. R * 8 since alpha = 1/8
-		arp.rttvar = (int64(rtt) >> 1) * BETA_SCALING           // use the scaled rttvar for Jacobson. (R / 2) * 4 since beta = 1/4
-		rto := rtt + time.Duration(DEFAULT_K_MARGIN*arp.rttvar) // because rtt = srtt / 8
-		arp.timeout = min(max(rto, arp.min), arp.max)
-		arp.logger.Debug("new RTO computed", "rto", arp.timeout.String(), "rtt", rtt.String())
-		return
 	}
 
 	rto, srtt, rttvar := jacobsonCalc(int64(rtt), arp.srtt, arp.rttvar, arp.kMargin)

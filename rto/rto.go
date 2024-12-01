@@ -229,7 +229,7 @@ func (arp *AdaptoRTOProvider) OverloadReq(overloadedTimeout time.Duration) int64
 		secondLastNormalReq := arp.prevNormalReqs.GetSecondLast()
 		fromLast := float64(lastNormalReq) * float64(arp.interval-referenceTime) / float64(arp.interval)
 		fromSecondLast := float64(secondLastNormalReq) * float64(referenceTime) / float64(arp.interval)
-		arp.logger.Debug("overload req computed",
+		arp.logger.Info("overload req computed",
 			"fromLast", fromLast,
 			"fromSecondLast", fromSecondLast,
 		)
@@ -237,7 +237,7 @@ func (arp *AdaptoRTOProvider) OverloadReq(overloadedTimeout time.Duration) int64
 	}
 	fromThis := float64(arp.req) * float64(referenceTime) / float64(relativeTime)
 	fromLast := float64(lastNormalReq) * float64(arp.interval-referenceTime) / float64(arp.interval)
-	arp.logger.Debug("overload req computed",
+	arp.logger.Info("overload req computed",
 		"fromThis", fromThis,
 		"fromLast", fromLast,
 	)

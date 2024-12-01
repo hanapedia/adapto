@@ -57,6 +57,19 @@ func (rb *RingBuffer[T]) GetLast() T {
 	return rb.buffer[lastIndex]
 }
 
+// GetSecondLast retrieves the second-to-last element from the buffer.
+// If the buffer has fewer than two elements, it returns the zero value of the type.
+func (rb *RingBuffer[T]) GetSecondLast() T {
+	var zero T // Zero value for type T
+	if rb.count < 2 {
+		return zero // Not enough elements to retrieve the second-to-last
+	}
+
+	// Get the index of the second-to-last element
+	secondLastIndex := (rb.start + rb.count - 2) % rb.size
+	return rb.buffer[secondLastIndex]
+}
+
 // AverageNonZero calculates the average of non-zero elements in the buffer.
 func (rb *RingBuffer[T]) AverageNonZero() float64 {
 	sum := T(0)

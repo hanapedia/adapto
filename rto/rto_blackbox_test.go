@@ -1,6 +1,7 @@
 package rto_test
 
 import (
+	"context"
 	"math"
 	"math/rand"
 	"sync"
@@ -15,93 +16,6 @@ import (
 type Res struct {
 	rto time.Duration
 	rtt time.Duration
-}
-
-func TestStartWithOutSLO(t *testing.T) {
-	logger := logger.NewDefaultLogger()
-	config := rto.Config{
-		Id:             "test1",
-		Max:            5 * time.Second,
-		Min:            1 * time.Millisecond,
-		SLOFailureRate: 0,
-		Interval:       1 * time.Second,
-	}
-
-	normalRps := 800
-	normalInterval := 1 * time.Second / time.Duration(normalRps)
-	normalRtts := generateParetoSamples(2500, 5.0, 5)
-
-	abnormalRps := 1500
-	abnormalInterval := 1 * time.Second / time.Duration(abnormalRps)
-	abnormalRtts := generateParetoSamples(2000, 5.0, 0.5)
-
-	var wg sync.WaitGroup
-
-	for _, rtt := range normalRtts {
-		time.Sleep(normalInterval)
-		wg.Add(1)
-		go func(rtt float64) {
-			timeout, rttCh, err := rto.GetTimeout(config)
-			assert.NoError(t, err, "Error should be nil for GetTimeout")
-			rttD := time.Duration(rtt) * time.Millisecond
-			if timeout < rttD {
-				time.Sleep(timeout)
-				logger.Error("timeout exceeded", "rto", timeout, "rrtD", rttD.String())
-				rttCh <- -timeout
-				wg.Done()
-			} else {
-				time.Sleep(rttD)
-				rttCh <- rttD
-				wg.Done()
-			}
-		}(rtt)
-	}
-
-	logger.Info("<--------------------------Beginning of Abnormal Load-------------------------->")
-
-	for _, rtt := range abnormalRtts {
-		time.Sleep(abnormalInterval)
-		wg.Add(1)
-		go func(rtt float64) {
-			timeout, rttCh, err := rto.GetTimeout(config)
-			assert.NoError(t, err, "Error should be nil for GetTimeout")
-			rttD := time.Duration(rtt) * time.Millisecond
-			if timeout < rttD {
-				time.Sleep(timeout)
-				logger.Error("timeout exceeded", "rto", timeout, "rrtD", rttD.String())
-				rttCh <- -timeout
-				wg.Done()
-			} else {
-				time.Sleep(rttD)
-				rttCh <- rttD
-				wg.Done()
-			}
-		}(rtt)
-	}
-
-	logger.Info("<--------------------------End of Abnormal Load-------------------------->")
-
-	for _, rtt := range normalRtts {
-		time.Sleep(normalInterval)
-		wg.Add(1)
-		go func(rtt float64) {
-			timeout, rttCh, err := rto.GetTimeout(config)
-			assert.NoError(t, err, "Error should be nil for GetTimeout")
-			rttD := time.Duration(rtt) * time.Millisecond
-			if timeout < rttD {
-				time.Sleep(timeout)
-				logger.Error("timeout exceeded", "rto", timeout, "rrtD", rttD.String())
-				rttCh <- -timeout
-				wg.Done()
-			} else {
-				time.Sleep(rttD)
-				rttCh <- rttD
-				wg.Done()
-			}
-		}(rtt)
-	}
-
-	wg.Wait()
 }
 
 func TestStartWithSLO(t *testing.T) {
@@ -201,6 +115,63 @@ func TestStartWithSLO(t *testing.T) {
 	)
 }
 
+func TestStartOverload(t *testing.T) {
+	logger := logger.NewDefaultLogger()
+	config := rto.Config{
+		Id:             "test1",
+		Max:            100 * time.Millisecond,
+		Min:            1 * time.Millisecond,
+		SLOFailureRate: 0.01,
+		Interval:       5 * time.Second,
+	}
+
+	abnormalRps := 3000
+	abnormalInterval := time.Duration(float64(time.Second) / float64(abnormalRps))
+	logger.Info(abnormalInterval.String())
+	abnormalRtts := generateParetoSamples(30000, 5.0, 1.5)
+
+	var wg sync.WaitGroup
+	resCh := make(chan Res)
+
+	total := 0
+	abtotal := 0
+	failed := 0
+	abfailed := 0
+	var rtoSum int64 = 0
+	var rttSum int64 = 0
+	var abrtoSum int64 = 0
+	var abrttSum int64 = 0
+
+	for _, rtt := range abnormalRtts {
+		time.Sleep(abnormalInterval)
+		wg.Add(1)
+		go simulateRequest(t, rtt, config, &wg, resCh)
+	}
+	for range abnormalRtts {
+		res := <-resCh
+		if res.rto <= res.rtt {
+			failed++
+			abfailed++
+		}
+		total++
+		abtotal++
+		rtoSum += res.rto.Milliseconds()
+		rttSum += res.rtt.Milliseconds()
+		abrtoSum += res.rto.Milliseconds()
+		abrttSum += res.rtt.Milliseconds()
+	}
+
+	wg.Wait()
+
+	logger.Info("Complete",
+		"fr", float64(failed)/float64(total),
+		"ab_fr", float64(abfailed)/float64(abtotal),
+		"avg_rtt", float64(rttSum)/float64(total),
+		"avg_rto", float64(rtoSum)/float64(total),
+		"ab_avg_rtt", float64(abrttSum)/float64(abtotal),
+		"ab_avg_rto", float64(abrtoSum)/float64(abtotal),
+	)
+}
 // generateNormalSamples generates a slice of n int64 samples from a normal distribution
 // with a specified mean and standard deviation.
 func generateNormalSamples(n int, mean, std float64) []float64 {
@@ -224,7 +195,7 @@ func generateParetoSamples(n int, scale, shape float64) []float64 {
 }
 
 func simulateRequest(t *testing.T, rtt float64, config rto.Config, wg *sync.WaitGroup, resCh chan<- Res) {
-	timeout, rttCh, err := rto.GetTimeout(config)
+	timeout, rttCh, err := rto.GetTimeout(context.Background(), config)
 	assert.NoError(t, err, "Error should be nil for GetTimeout")
 	rttD := time.Duration(rtt) * time.Millisecond
 	if timeout < rttD {

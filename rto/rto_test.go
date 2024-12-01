@@ -1,6 +1,7 @@
 package rto
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -14,7 +15,7 @@ func TestInitialRTTCalculation(t *testing.T) {
 		Min: 50 * time.Millisecond,
 	}
 
-	timeout, rttCh, err := GetTimeout(config)
+	timeout, rttCh, err := GetTimeout(context.Background(), config)
 	assert.NoError(t, err, "Error should be nil for GetTimeout")
 	assert.Equal(t, config.Max, timeout, "Initial timeout should match config max")
 
@@ -44,7 +45,7 @@ func TestRegularRTTUpdates(t *testing.T) {
 		Min: 50 * time.Millisecond,
 	}
 
-	timeout, rttCh, err := GetTimeout(config)
+	timeout, rttCh, err := GetTimeout(context.Background(), config)
 	assert.NoError(t, err, "Error should be nil for GetTimeout")
 	assert.Equal(t, config.Max, timeout, "Initial timeout should match config max")
 
@@ -74,7 +75,7 @@ func TestTimeoutBackoff(t *testing.T) {
 		Min: 50 * time.Millisecond,
 	}
 
-	timeout, rttCh, err := GetTimeout(config)
+	timeout, rttCh, err := GetTimeout(context.Background(), config)
 	assert.NoError(t, err, "Error should be nil for GetTimeout")
 
 	provider := AdaptoRTOProviders[config.Id]
@@ -103,7 +104,7 @@ func TestMinMaxConstraints(t *testing.T) {
 		Min: 500 * time.Millisecond,
 	}
 
-	_, rttCh, err := GetTimeout(config)
+	_, rttCh, err := GetTimeout(context.Background(), config)
 	assert.NoError(t, err, "Error should be nil for GetTimeout")
 
 	provider := AdaptoRTOProviders[config.Id]

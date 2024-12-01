@@ -350,7 +350,7 @@ func (arp *AdaptoRTOProvider) onInterval() {
 	// handle OVERLOAD state
 	// TODO: should consider if this threshold is rationale
 	/* if arp.overloadThresholdReq < arp.req { */
-	if arp.dropped > 0 {
+	if arp.queueLength > 0 {
 		// stil in overload
 		arp.logger.Info("still in overload", "overloadThresholdReq", arp.overloadThresholdReq, "dropped", arp.dropped, "req", arp.req)
 		return

@@ -71,7 +71,7 @@ func (rb *RingBuffer[T]) GetSecondLast() T {
 }
 
 // AverageNonZero calculates the average of non-zero elements in the buffer.
-func (rb *RingBuffer[T]) AverageNonZero() float64 {
+func (rb *RingBuffer[T]) AverageNonZero() T {
 	sum := T(0)
 	nonZeroCount := 0
 
@@ -86,5 +86,5 @@ func (rb *RingBuffer[T]) AverageNonZero() float64 {
 	if nonZeroCount == 0 {
 		return 0 // Avoid division by zero
 	}
-	return float64(sum) / float64(nonZeroCount)
+	return sum / T(nonZeroCount)
 }

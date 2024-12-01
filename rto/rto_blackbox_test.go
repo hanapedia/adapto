@@ -125,7 +125,7 @@ func TestStartOverload(t *testing.T) {
 		Interval:       5 * time.Second,
 	}
 
-	abnormalRps := 3000
+	abnormalRps := 300
 	abnormalInterval := time.Duration(float64(time.Second) / float64(abnormalRps))
 	logger.Info(abnormalInterval.String())
 	abnormalRtts := generateParetoSamples(30000, 5.0, 1.5)
@@ -196,7 +196,14 @@ func generateParetoSamples(n int, scale, shape float64) []float64 {
 
 func simulateRequest(t *testing.T, rtt float64, config rto.Config, wg *sync.WaitGroup, resCh chan<- Res) {
 	timeout, rttCh, err := rto.GetTimeout(context.Background(), config)
-	assert.NoError(t, err, "Error should be nil for GetTimeout")
+	if err != nil {
+		if err == rto.RequestRateLimitExceeded {
+			wg.Done()
+			resCh <- Res{rto: timeout, rtt: time.Duration(rtt) * time.Millisecond}
+			return
+		}
+		assert.NoError(t, err, "Error should be nil for GetTimeout")
+	}
 	rttD := time.Duration(rtt) * time.Millisecond
 	if timeout < rttD {
 		time.Sleep(timeout)

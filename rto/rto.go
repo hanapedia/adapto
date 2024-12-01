@@ -466,6 +466,9 @@ func (arp *AdaptoRTOProvider) ComputeNewRTO(rtt time.Duration) {
 		arp.ChokeTimeout()
 		arp.state = OVERLOAD
 
+		// increment so that first interval check is skipped
+		arp.dropped++
+
 		// precompute the threshold
 		/* arp.overloadThresholdReq = (arp.CurrentReq() + int64(arp.prevNormalReqs.AverageNonZero())) >> 1 */
 		// use shifted overload reference point

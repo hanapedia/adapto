@@ -419,6 +419,11 @@ func (arp *AdaptoRTOProvider) NewTimeout(ctx context.Context) (timeout time.Dura
 			arp.dropped++
 			return time.Duration(0), rttCh, RequestRateLimitExceeded
 		}
+		arp.logger.Info("new timeout suspended",
+			"queueLength", arp.queueLength,
+			"supend", suspend,
+			"dropped", arp.dropped,
+		)
 
 		arp.mu.Unlock() // unlock while suspended
 

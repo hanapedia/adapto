@@ -475,16 +475,19 @@ func (arp *AdaptoRTOProvider) ComputeNewRTO(rtt time.Duration) {
 		// increment so that first interval check is skipped
 		arp.dropped++
 
-		// precompute the threshold
-		/* arp.overloadThresholdReq = (arp.CurrentReq() + int64(arp.prevNormalReqs.AverageNonZero())) >> 1 */
+		// threshold is then calculated as the average between prevNormalReqs and overloadReq
 		// use shifted overload reference point
-		arp.overloadThresholdReq = arp.OverloadReq(rtt) // arp.overloadThresholdReq MUST not return 0
+		avgNormalReq := arp.prevNormalReqs.AverageNonZero()
+		overloadReq := arp.OverloadReq(rtt)
+		arp.overloadThresholdReq = max((avgNormalReq+overloadReq)>>1, 1)
 		arp.sendRateInterval = arp.interval / time.Duration(arp.overloadThresholdReq)
 		arp.logger.Info("overload detected",
 			"triggerRTO", rtoD,
 			"chokedRTO", arp.timeout,
 			"minRtt", arp.minRtt,
 			"overloadThresholdReq", arp.overloadThresholdReq,
+			"avgNormalReq", avgNormalReq,
+			"overloadReq", overloadReq,
 			"sendRateInterval", arp.sendRateInterval,
 		)
 		return

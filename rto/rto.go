@@ -350,7 +350,7 @@ func (arp *AdaptoRTOProvider) onInterval() {
 	// handle OVERLOAD state
 	// TODO: should consider if this threshold is rationale
 	/* if arp.overloadThresholdReq < arp.req { */
-	if arp.queueLength > 0 {
+	if arp.dropped > 0 {
 		// stil in overload
 		arp.logger.Info("still in overload", "overloadThresholdReq", arp.overloadThresholdReq, "dropped", arp.dropped, "req", arp.req)
 		return
@@ -359,6 +359,7 @@ func (arp *AdaptoRTOProvider) onInterval() {
 	arp.logger.Info("overload resolved", "overloadThresholdReq", arp.overloadThresholdReq, "dropped", arp.dropped, "req", arp.req)
 	arp.overloadThresholdReq = 0
 	arp.sendRateInterval = 0
+	arp.queueLength = 0
 	arp.state = NORMAL
 }
 
@@ -407,23 +408,25 @@ func (arp *AdaptoRTOProvider) NewTimeout(ctx context.Context) (timeout time.Dura
 	// nextSchedulable = schedule interval * requests already in line + time.Now()
 	// suspend = arp.schedulingInterval * arp.queueLength
 	if arp.state == OVERLOAD {
-		if arp.queueLength == 0 {
-			return arp.timeout, rttCh, nil
-		}
-
-		arp.queueLength++
-
 		suspend := arp.sendRateInterval * time.Duration(arp.queueLength)
 		adjustedTimeout := arp.max - suspend
 		if adjustedTimeout < arp.timeout {
 			arp.dropped++
+			arp.logger.Info("new timeout dropped",
+				"queueLength", arp.queueLength,
+				"supend", suspend,
+				"dropped", arp.dropped,
+			)
 			return time.Duration(0), rttCh, RequestRateLimitExceeded
 		}
-		arp.logger.Info("new timeout suspended",
-			"queueLength", arp.queueLength,
-			"supend", suspend,
-			"dropped", arp.dropped,
-		)
+
+		arp.queueLength++
+
+		// return the timeout without suspending
+		// no need to subtract queueLength to avoid multiplication by zero
+		if suspend == 0 {
+			return arp.timeout, rttCh, nil
+		}
 
 		arp.mu.Unlock() // unlock while suspended
 
@@ -432,12 +435,10 @@ func (arp *AdaptoRTOProvider) NewTimeout(ctx context.Context) (timeout time.Dura
 		case <-suspendTimer.C:
 			arp.mu.Lock() // reaquire lock, this wait could add up to suspend
 			arp.queueLength--
-			arp.mu.Unlock()
 			return adjustedTimeout, rttCh, nil
 		case <-ctx.Done():
 			arp.mu.Lock()
 			arp.queueLength--
-			arp.mu.Unlock()
 			return time.Duration(0), rttCh, ctx.Err()
 		}
 

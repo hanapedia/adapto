@@ -363,10 +363,11 @@ func (arp *AdaptoRTOProvider) onInterval() {
 	arp.state = NORMAL
 }
 
-// calcInflight calculates current inflight requests
+// calcInflight calculates current inflight requests.
 // MUST be called in thread safe manner as it does not lock mu
 func (arp *AdaptoRTOProvider) inflight() int64 {
-	return arp.req - arp.res
+	// make sure to subtract dropped
+	return arp.req - arp.res - arp.dropped
 }
 
 var AdaptoRTOProviders map[string]*AdaptoRTOProvider

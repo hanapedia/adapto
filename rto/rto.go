@@ -274,7 +274,7 @@ func (arp *AdaptoRTOProvider) ChokeTimeout() {
 	rttvar := (int64(arp.minRtt) >> 1) * BETA_SCALING
 
 	// compute rto with formula for first rtt observed.
-	rto := arp.minRtt + time.Duration(DEFAULT_K_MARGIN*rttvar) // because rtt = srtt / 8
+	rto := arp.minRtt + time.Duration(arp.kMargin*rttvar) // because rtt = srtt / 8
 	arp.timeout = min(max(rto, arp.min), arp.max)
 }
 

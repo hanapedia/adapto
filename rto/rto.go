@@ -13,17 +13,15 @@ import (
 )
 
 const (
-	DEFAULT_BACKOFF      int64         = 2
-	CONSERVATIVE_BACKOFF int64         = 1
-	DEFAULT_K_MARGIN     int64         = 1
-	DEFAULT_INTERVAL     time.Duration = 5 * time.Second
-	DEFAULT_SLO          float64       = 0.1
-	ALPHA_SCALING        int64         = 8
-	LOG2_ALPHA           int64         = 3
-	BETA_SCALING         int64         = 4
-	LOG2_BETA            int64         = 2
-	SLO_SAFETY_MARGIN    float64       = 0.5 // safety margin of 0.5 or division by 2
-	MIN_FAILED_SAMPLES   float64       = 2
+	DEFAULT_K_MARGIN   int64         = 1
+	DEFAULT_INTERVAL   time.Duration = 5 * time.Second
+	ALPHA_SCALING      int64         = 8
+	LOG2_ALPHA         int64         = 3
+	BETA_SCALING       int64         = 4
+	LOG2_BETA          int64         = 2
+	SLO_SAFETY_MARGIN  float64       = 0.5 // safety margin of 0.5 or division by 2
+	MIN_FAILED_SAMPLES float64       = 2
+	LOG2_PACING_GAIN   int64         = 3
 )
 
 // DONE(v1.0.14): consider the raional of using negative duration for timedout requests
@@ -126,6 +124,7 @@ type AdaptoRTOProvider struct {
 	overloadThresholdReq int64         // number of requests sent for the interval that caused state transition from NORMAL to OVERLOAD
 	queueLength          int64         // number of requests SCHEDULED & suspended for their turn
 	sendRateInterval     time.Duration // per request interval for controlling sending rate at 1 / overloadThresholdReq
+	pacingGain           int64         // log2 base to be uses as pacing gain or shringk. e.g. overloadThresholdReq + overloadThresholdReq >> pacingGain
 
 	prevNormalReqs *ring.RingBuffer[int64] // ring buffer for recording previous numPrevNormalReqs reqs samples
 	prevNormalRess *ring.RingBuffer[int64] // ring buffer for recording previous numPrevNormalRess ress samples
@@ -176,6 +175,11 @@ func NewAdaptoRTOProvider(config Config) *AdaptoRTOProvider {
 		// ring buffer with default size of 2 + ceil(max / inteval)
 		prevNormalReqs: ring.NewRingBuffer[int64](2 + int(math.Ceil(float64(config.Max)/float64(config.Interval)))),
 		prevNormalRess: ring.NewRingBuffer[int64](2 + int(math.Ceil(float64(config.Max)/float64(config.Interval)))),
+
+		overloadThresholdReq: 0,
+		queueLength:          0,
+		sendRateInterval:     0,
+		pacingGain:           LOG2_PACING_GAIN,
 
 		sloFailureRateAdjusted: config.SLOFailureRate * SLO_SAFETY_MARGIN,
 		minSamplesRequired:     MIN_FAILED_SAMPLES / (config.SLOFailureRate * SLO_SAFETY_MARGIN),
@@ -372,6 +376,7 @@ func (arp *AdaptoRTOProvider) onInterval() {
 	arp.logger.Info("failure rate computed", "fr", fr, "sfr", arp.sfr)
 
 	// handle NORMAL state
+	// adjusting kMargin
 	if arp.state == NORMAL {
 		arp.prevNormalReqs.Add(arp.req)
 		arp.prevNormalRess.Add(arp.res)
@@ -392,10 +397,23 @@ func (arp *AdaptoRTOProvider) onInterval() {
 
 	// handle OVERLOAD state
 	// TODO: should consider if this threshold is rationale
-	/* if arp.overloadThresholdReq < arp.req { */
+	// adjusting pacing
 	if arp.dropped > 0 {
 		// stil in overload
 		arp.logger.Info("still in overload", "overloadThresholdReq", arp.overloadThresholdReq, "dropped", arp.dropped, "req", arp.req)
+		if fr >= arp.sloFailureRateAdjusted {
+			// shrink pacing with reduced gain
+			arp.pacingGain++
+			arp.sendRateInterval = arp.interval / time.Duration(
+				arp.overloadThresholdReq-arp.overloadThresholdReq>>arp.pacingGain,
+			)
+		} else {
+			// gain pacing by x1.125
+			// TODO: consider resetting pacing gain or cycling
+			arp.sendRateInterval = arp.interval / time.Duration(
+				arp.overloadThresholdReq+arp.overloadThresholdReq>>arp.pacingGain,
+			)
+		}
 		return
 	}
 	// undeclare overload
@@ -403,6 +421,7 @@ func (arp *AdaptoRTOProvider) onInterval() {
 	arp.overloadThresholdReq = 0
 	arp.sendRateInterval = 0
 	arp.queueLength = 0
+	arp.pacingGain = LOG2_PACING_GAIN
 
 	// reset timeout computation
 	arp.srtt = 0

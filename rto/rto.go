@@ -412,15 +412,20 @@ func (arp *AdaptoRTOProvider) onInterval() {
 				arp.overloadThresholdReq,
 			)
 			arp.logger.Info("still in overload, shrinking pacing", "sendRateInterval", arp.sendRateInterval, "overloadThresholdReq", arp.overloadThresholdReq, "dropped", arp.dropped, "req", arp.req)
-		} else {
-			// gain pacing by x1.125
-			// TODO: consider resetting pacing gain or cycling
+			return
+		}
+		// gain pacing by x1.125
+		// TODO: consider resetting pacing gain or cycling
+		// gain pacing if long term fr is at acceptable level
+		if arp.sfr < arp.sloFailureRateAdjusted {
 			arp.overloadThresholdReq += arp.overloadThresholdReq >> LOG2_PACING_GAIN
 			arp.sendRateInterval = arp.interval / time.Duration(
 				arp.overloadThresholdReq,
 			)
 			arp.logger.Info("still in overload, growing pacing", "sendRateInterval", arp.sendRateInterval, "overloadThresholdReq", arp.overloadThresholdReq, "dropped", arp.dropped, "req", arp.req)
+			return
 		}
+		arp.logger.Info("still in overload, pacing unchanged", "sendRateInterval", arp.sendRateInterval, "overloadThresholdReq", arp.overloadThresholdReq, "dropped", arp.dropped, "req", arp.req)
 		return
 	}
 	// undeclare overload

@@ -489,7 +489,7 @@ func (arp *AdaptoRTOProvider) NewTimeout(ctx context.Context) (timeout time.Dura
 		adjustedTimeout := arp.max - suspend
 		if adjustedTimeout < arp.timeout {
 			arp.dropped++
-			arp.logger.Debug("new timeout dropped",
+			arp.logger.Info("new timeout dropped",
 				"queueLength", arp.queueLength,
 				"supend", suspend,
 				"dropped", arp.dropped,

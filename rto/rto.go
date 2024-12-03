@@ -22,7 +22,7 @@ const (
 	SLO_SAFETY_MARGIN  float64       = 0.5 // safety margin of 0.5 or division by 2
 	MIN_FAILED_SAMPLES float64       = 2
 	LOG2_PACING_GAIN   int64         = 3
-	LOG2_PACING_SHRINK int64         = 2
+	LOG2_PACING_SHRINK int64         = 4
 )
 
 // DONE(v1.0.14): consider the raional of using negative duration for timedout requests

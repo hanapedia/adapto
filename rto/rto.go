@@ -400,10 +400,10 @@ func (arp *AdaptoRTOProvider) onInterval() {
 			// shrink pacing with reduced gain
 			// TODO: this only works when optimum is higher than current estimate
 			// only for load increase and not capacity decrease
-			arp.overloadThresholdReq -= arp.overloadThresholdReq >> LOG2_PACING_SHRINK
-			arp.sendRateInterval = arp.interval / time.Duration(
-				arp.overloadThresholdReq,
-			)
+			/* arp.overloadThresholdReq -= arp.overloadThresholdReq >> LOG2_PACING_SHRINK */
+			/* arp.sendRateInterval = arp.interval / time.Duration( */
+			/* 	arp.overloadThresholdReq, */
+			/* ) */
 			arp.logger.Info("still in overload, shrinking pacing", "sendRateInterval", arp.sendRateInterval, "overloadThresholdReq", arp.overloadThresholdReq, "dropped", arp.dropped, "req", arp.req)
 		} else {
 			// gain pacing by x1.125

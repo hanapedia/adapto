@@ -529,7 +529,8 @@ func (arp *AdaptoRTOProvider) ComputeNewRTO(rtt time.Duration) {
 	/* } */
 	/**/
 	// do not update these values when overload is detected
-	arp.timeout = max(time.Duration(rto), arp.min) // no need to check for max because of early return
+	/* arp.timeout = max(time.Duration(rto), arp.min) // no need to check for max because of early return */
+	arp.timeout = min(max(time.Duration(rto), arp.min), arp.max)
 	arp.srtt = srtt
 	arp.rttvar = rttvar
 	arp.logger.Debug("new RTO computed", "rto", arp.timeout.String(), "rtt", rtt.String())

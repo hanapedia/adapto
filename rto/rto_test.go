@@ -1,6 +1,7 @@
 package rto
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -14,7 +15,7 @@ func TestInitialRTTCalculation(t *testing.T) {
 		Min: 50 * time.Millisecond,
 	}
 
-	timeout, rttCh, err := GetTimeout(config)
+	timeout, rttCh, err := GetTimeout(context.Background(), config)
 	assert.NoError(t, err, "Error should be nil for GetTimeout")
 	assert.Equal(t, config.Max, timeout, "Initial timeout should match config max")
 
@@ -44,7 +45,7 @@ func TestRegularRTTUpdates(t *testing.T) {
 		Min: 50 * time.Millisecond,
 	}
 
-	timeout, rttCh, err := GetTimeout(config)
+	timeout, rttCh, err := GetTimeout(context.Background(), config)
 	assert.NoError(t, err, "Error should be nil for GetTimeout")
 	assert.Equal(t, config.Max, timeout, "Initial timeout should match config max")
 
@@ -67,35 +68,6 @@ func TestRegularRTTUpdates(t *testing.T) {
 	provider.mu.Unlock()
 }
 
-func TestTimeoutBackoff(t *testing.T) {
-	config := Config{
-		Id:  "test3",
-		Max: 5 * time.Second,
-		Min: 50 * time.Millisecond,
-	}
-
-	timeout, rttCh, err := GetTimeout(config)
-	assert.NoError(t, err, "Error should be nil for GetTimeout")
-
-	provider := AdaptoRTOProviders[config.Id]
-
-	// Send an RTT measurement
-	rttCh <- 100 * time.Millisecond
-	time.Sleep(50 * time.Millisecond)
-	provider.mu.Lock()
-	expectedBackoffTimeout := min(config.Max, provider.timeout*time.Duration(DEFAULT_BACKOFF))
-	provider.mu.Unlock()
-
-	// Send a DeadlineExceeded signal to test backoff
-	rttCh <- -timeout
-
-	time.Sleep(50 * time.Millisecond)
-	// Check if timeout was backed off correctly
-	provider.mu.Lock()
-	assert.Equal(t, expectedBackoffTimeout, provider.timeout, "Timeout should be backed off correctly on deadline exceeded")
-	provider.mu.Unlock()
-}
-
 func TestMinMaxConstraints(t *testing.T) {
 	config := Config{
 		Id:  "test4",
@@ -103,7 +75,7 @@ func TestMinMaxConstraints(t *testing.T) {
 		Min: 500 * time.Millisecond,
 	}
 
-	_, rttCh, err := GetTimeout(config)
+	_, rttCh, err := GetTimeout(context.Background(), config)
 	assert.NoError(t, err, "Error should be nil for GetTimeout")
 
 	provider := AdaptoRTOProviders[config.Id]

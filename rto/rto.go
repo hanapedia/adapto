@@ -22,7 +22,6 @@ const (
 	SLO_SAFETY_MARGIN  float64       = 0.5 // safety margin of 0.5 or division by 2
 	MIN_FAILED_SAMPLES float64       = 2
 	LOG2_PACING_GAIN   int64         = 3
-	LOG2_PACING_SHRINK int64         = 4
 )
 
 // DONE(v1.0.14): consider the raional of using negative duration for timedout requests
@@ -397,13 +396,11 @@ func (arp *AdaptoRTOProvider) onInterval() {
 	if arp.dropped > 0 {
 		// stil in overload
 		if fr >= arp.sloFailureRateAdjusted {
-			// shrink pacing with reduced gain
-			// TODO: this only works when optimum is higher than current estimate
-			// only for load increase and not capacity decrease
-			/* arp.overloadThresholdReq -= arp.overloadThresholdReq >> LOG2_PACING_SHRINK */
-			/* arp.sendRateInterval = arp.interval / time.Duration( */
-			/* 	arp.overloadThresholdReq, */
-			/* ) */
+			// shrink pacing to res
+			arp.overloadThresholdReq = arp.res
+			arp.sendRateInterval = arp.interval / time.Duration(
+				arp.overloadThresholdReq,
+			)
 			arp.logger.Info("still in overload, shrinking pacing", "sendRateInterval", arp.sendRateInterval, "overloadThresholdReq", arp.overloadThresholdReq, "dropped", arp.dropped, "req", arp.req)
 		} else {
 			// gain pacing by x1.125

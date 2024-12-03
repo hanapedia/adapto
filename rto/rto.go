@@ -21,7 +21,7 @@ const (
 	LOG2_BETA                int64         = 2
 	SLO_SAFETY_MARGIN        float64       = 0.5 // safety margin of 0.5 or division by 2
 	MIN_FAILED_SAMPLES       float64       = 2
-	LOG2_PACING_GAIN         int64         = 4
+	LOG2_PACING_GAIN         int64         = 5
 	OVERLOAD_DRAIN_INTERVALS int64         = 3 // intervals to choke rto after overload
 )
 

@@ -126,7 +126,7 @@ type AdaptoRTOProvider struct {
 	sendRateInterval     time.Duration // per request interval for controlling sending rate at 1 / overloadThresholdReq
 
 	prevNormalReqs *ring.RingBuffer[int64] // ring buffer for recording previous numPrevNormalReqs reqs samples
-	prevNormalRess *ring.RingBuffer[int64] // ring buffer for recording previous numPrevNormalRess ress samples
+	prevSuccRess   *ring.RingBuffer[int64] // ring buffer for recording previous numPrevNormalRess ress samples
 
 	// mutex for synchronizing access to timeout calculation fields
 	mu sync.Mutex
@@ -173,7 +173,7 @@ func NewAdaptoRTOProvider(config Config) *AdaptoRTOProvider {
 		intervalStart: time.Now(),
 		// ring buffer with default size of 2 + ceil(max / inteval)
 		prevNormalReqs: ring.NewRingBuffer[int64](2 + int(math.Ceil(float64(config.Max)/float64(config.Interval)))),
-		prevNormalRess: ring.NewRingBuffer[int64](2 + int(math.Ceil(float64(config.Max)/float64(config.Interval)))),
+		prevSuccRess:   ring.NewRingBuffer[int64](2 + int(math.Ceil(float64(config.Max)/float64(config.Interval)))),
 
 		overloadThresholdReq: 0,
 		queueLength:          0,
@@ -251,16 +251,16 @@ func (arp *AdaptoRTOProvider) OverloadReq(overloadedTimeout time.Duration) int64
 // OverloadRes computes the estimate of instantaneous goodput per interval.
 // the reference time for the sliding window is the moment this method is called.
 func (arp *AdaptoRTOProvider) CurrentRes() int64 {
-	lastNormalRes := arp.prevNormalRess.GetLast()
-	previousResEstimate := float64(lastNormalRes) * float64(arp.interval-time.Since(arp.intervalStart)) / float64(arp.interval)
+	lastSuccRes := arp.prevSuccRess.GetLast()
+	previousResEstimate := float64(lastSuccRes) * float64(arp.interval-time.Since(arp.intervalStart)) / float64(arp.interval)
 	arp.logger.Debug("current rate computed",
 		"res", arp.res,
-		"lastNormalRes", lastNormalRes,
+		"lastSuccRes", lastSuccRes,
 		"previousResEstimate", previousResEstimate,
 		"sinceIntervalStart", time.Since(arp.intervalStart),
 		"durationRatio", float64(time.Since(arp.intervalStart))/float64(arp.interval),
 	)
-	return int64(math.Round(previousResEstimate)) + arp.res
+	return int64(math.Round(previousResEstimate)) + arp.succeeded()
 }
 
 // ChokeTimeout handles timeout update when transitioning to overload
@@ -375,7 +375,7 @@ func (arp *AdaptoRTOProvider) onInterval() {
 	// adjusting kMargin
 	if arp.state == NORMAL {
 		arp.prevNormalReqs.Add(arp.req)
-		arp.prevNormalRess.Add(arp.res)
+		arp.prevSuccRess.Add(arp.succeeded())
 		// if the fr for this interval is below threshold, must increment kMargin
 		if fr >= arp.sloFailureRateAdjusted {
 			arp.kMargin++
@@ -397,7 +397,7 @@ func (arp *AdaptoRTOProvider) onInterval() {
 		// stil in overload
 		if fr >= arp.sloFailureRateAdjusted {
 			// shrink pacing to res
-			arp.overloadThresholdReq = arp.res
+			arp.overloadThresholdReq = arp.succeeded()
 			arp.sendRateInterval = arp.interval / time.Duration(
 				arp.overloadThresholdReq,
 			)
@@ -430,6 +430,12 @@ func (arp *AdaptoRTOProvider) onInterval() {
 func (arp *AdaptoRTOProvider) inflight() int64 {
 	// make sure to subtract dropped
 	return arp.req - arp.res - arp.dropped
+}
+
+// succeeded calculates the successful responses
+// MUST be called in thread safe manner as it does not lock mu
+func (arp *AdaptoRTOProvider) succeeded() int64 {
+	return arp.res - arp.failed
 }
 
 var AdaptoRTOProviders map[string]*AdaptoRTOProvider

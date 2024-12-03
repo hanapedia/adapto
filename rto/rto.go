@@ -22,6 +22,7 @@ const (
 	SLO_SAFETY_MARGIN  float64       = 0.5 // safety margin of 0.5 or division by 2
 	MIN_FAILED_SAMPLES float64       = 2
 	LOG2_PACING_GAIN   int64         = 3
+	LOG2_PACING_SHRINK int64         = 2
 )
 
 // DONE(v1.0.14): consider the raional of using negative duration for timedout requests
@@ -124,7 +125,6 @@ type AdaptoRTOProvider struct {
 	overloadThresholdReq int64         // number of requests sent for the interval that caused state transition from NORMAL to OVERLOAD
 	queueLength          int64         // number of requests SCHEDULED & suspended for their turn
 	sendRateInterval     time.Duration // per request interval for controlling sending rate at 1 / overloadThresholdReq
-	pacingGain           int64         // log2 base to be uses as pacing gain or shringk. e.g. overloadThresholdReq + overloadThresholdReq >> pacingGain
 
 	prevNormalReqs *ring.RingBuffer[int64] // ring buffer for recording previous numPrevNormalReqs reqs samples
 	prevNormalRess *ring.RingBuffer[int64] // ring buffer for recording previous numPrevNormalRess ress samples
@@ -179,7 +179,6 @@ func NewAdaptoRTOProvider(config Config) *AdaptoRTOProvider {
 		overloadThresholdReq: 0,
 		queueLength:          0,
 		sendRateInterval:     0,
-		pacingGain:           LOG2_PACING_GAIN,
 
 		sloFailureRateAdjusted: config.SLOFailureRate * SLO_SAFETY_MARGIN,
 		minSamplesRequired:     MIN_FAILED_SAMPLES / (config.SLOFailureRate * SLO_SAFETY_MARGIN),
@@ -335,8 +334,10 @@ func (arp *AdaptoRTOProvider) onRtt(rtt time.Duration) {
 //
 // if the main state machine is in OVERLOAD state:
 //   - kMargin is not updated no matter the failure rate
-//   - if the req for current interval is smaller than overloadThresholdReq,
-//     reset overloadThresholdReq, and set main state to NORMAL
+//   - if dropped is 0, reset overloadThresholdReq, and set main state to NORMAL
+//   - otherwise check if the failure rate excluding dropped is withing the SLO.
+//   - if yes, attempt to grow the threshold, and increase sending rate
+//   - if not, shring the threshold
 //
 // NOTE: this should be the only way margin is mutated
 // NOTE: the state transition NORMAL -> OVERLOAD is not handled here
@@ -399,8 +400,7 @@ func (arp *AdaptoRTOProvider) onInterval() {
 			// shrink pacing with reduced gain
 			// TODO: this only works when optimum is higher than current estimate
 			// only for load increase and not capacity decrease
-			arp.pacingGain++
-			arp.overloadThresholdReq -= arp.overloadThresholdReq >> arp.pacingGain
+			arp.overloadThresholdReq -= arp.overloadThresholdReq >> LOG2_PACING_SHRINK
 			arp.sendRateInterval = arp.interval / time.Duration(
 				arp.overloadThresholdReq,
 			)
@@ -408,7 +408,7 @@ func (arp *AdaptoRTOProvider) onInterval() {
 		} else {
 			// gain pacing by x1.125
 			// TODO: consider resetting pacing gain or cycling
-			arp.overloadThresholdReq += arp.overloadThresholdReq >> arp.pacingGain
+			arp.overloadThresholdReq += arp.overloadThresholdReq >> LOG2_PACING_GAIN
 			arp.sendRateInterval = arp.interval / time.Duration(
 				arp.overloadThresholdReq,
 			)
@@ -421,7 +421,6 @@ func (arp *AdaptoRTOProvider) onInterval() {
 	arp.overloadThresholdReq = 0
 	arp.sendRateInterval = 0
 	arp.queueLength = 0
-	arp.pacingGain = LOG2_PACING_GAIN
 
 	// reset timeout computation
 	arp.srtt = 0
@@ -532,37 +531,8 @@ func (arp *AdaptoRTOProvider) ComputeNewRTO(rtt time.Duration) {
 	}
 
 	rto, srtt, rttvar := jacobsonCalc(int64(rtt), arp.srtt, arp.rttvar, arp.kMargin)
-	/* rtoD := time.Duration(rto) */
 
-	// check if max timeout was not breachd
-	/* if rtoD >= arp.max { */
-	/* 	// declare overload */
-	/* 	arp.ChokeTimeout() */
-	/* 	arp.state = OVERLOAD */
-	/**/
-	/* 	// increment so that first interval check is skipped */
-	/* 	arp.dropped++ */
-	/**/
-	/* 	// threshold is then calculated as the average between prevNormalReqs and overloadReq */
-	/* 	// use shifted overload reference point */
-	/* 	avgNormalReq := arp.prevNormalReqs.AverageNonZero() */
-	/* 	overloadReq := arp.OverloadReq(rtt) */
-	/* 	arp.overloadThresholdReq = max((avgNormalReq+overloadReq)>>1, 1) */
-	/* 	arp.sendRateInterval = arp.interval / time.Duration(arp.overloadThresholdReq) */
-	/* 	arp.logger.Info("overload detected", */
-	/* 		"triggerRTO", rtoD, */
-	/* 		"chokedRTO", arp.timeout, */
-	/* 		"minRtt", arp.minRtt, */
-	/* 		"overloadThresholdReq", arp.overloadThresholdReq, */
-	/* 		"avgNormalReq", avgNormalReq, */
-	/* 		"overloadReq", overloadReq, */
-	/* 		"sendRateInterval", arp.sendRateInterval, */
-	/* 	) */
-	/* 	return */
-	/* } */
-	/**/
 	// do not update these values when overload is detected
-	/* arp.timeout = max(time.Duration(rto), arp.min) // no need to check for max because of early return */
 	arp.timeout = min(max(time.Duration(rto), arp.min), arp.max)
 	arp.srtt = srtt
 	arp.rttvar = rttvar

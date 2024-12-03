@@ -301,6 +301,7 @@ func (arp *AdaptoRTOProvider) onRtt(rtt time.Duration) {
 		// only start updating rto some intervals after overload declaration
 		// until then, update only srtt and rttvar with choked timeout
 		arp.ComputeNewRTO(rtt, arp.overloadInterval > OVERLOAD_DRAIN_INTERVALS)
+		arp.logger.Info("new RTO computed during overload", "rto", arp.timeout.String(), "rtt", rtt.String())
 		return
 	}
 
@@ -489,7 +490,7 @@ func (arp *AdaptoRTOProvider) NewTimeout(ctx context.Context) (timeout time.Dura
 		adjustedTimeout := arp.max - suspend
 		if adjustedTimeout < arp.timeout {
 			arp.dropped++
-			arp.logger.Info("new timeout dropped",
+			arp.logger.Debug("new timeout dropped",
 				"queueLength", arp.queueLength,
 				"supend", suspend,
 				"dropped", arp.dropped,

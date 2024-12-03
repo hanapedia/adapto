@@ -21,7 +21,7 @@ const (
 	LOG2_BETA                int64         = 2
 	SLO_SAFETY_MARGIN        float64       = 0.5 // safety margin of 0.5 or division by 2
 	MIN_FAILED_SAMPLES       float64       = 2
-	LOG2_PACING_GAIN         int64         = 3
+	LOG2_PACING_GAIN         int64         = 4
 	OVERLOAD_DRAIN_INTERVALS int64         = 3 // intervals to choke rto after overload
 )
 
@@ -417,15 +417,11 @@ func (arp *AdaptoRTOProvider) onInterval() {
 		// gain pacing by x1.125
 		// TODO: consider resetting pacing gain or cycling
 		// gain pacing if long term fr is at acceptable level
-		if arp.sfr < arp.sloFailureRateAdjusted {
-			arp.overloadThresholdReq += arp.overloadThresholdReq >> LOG2_PACING_GAIN
-			arp.sendRateInterval = arp.interval / time.Duration(
-				arp.overloadThresholdReq,
-			)
-			arp.logger.Info("still in overload, growing pacing", "sendRateInterval", arp.sendRateInterval, "overloadThresholdReq", arp.overloadThresholdReq, "dropped", arp.dropped, "req", arp.req)
-			return
-		}
-		arp.logger.Info("still in overload, pacing unchanged", "sendRateInterval", arp.sendRateInterval, "overloadThresholdReq", arp.overloadThresholdReq, "dropped", arp.dropped, "req", arp.req)
+		arp.overloadThresholdReq += arp.overloadThresholdReq >> LOG2_PACING_GAIN
+		arp.sendRateInterval = arp.interval / time.Duration(
+			arp.overloadThresholdReq,
+		)
+		arp.logger.Info("still in overload, growing pacing", "sendRateInterval", arp.sendRateInterval, "overloadThresholdReq", arp.overloadThresholdReq, "dropped", arp.dropped, "req", arp.req)
 		return
 	}
 	// undeclare overload

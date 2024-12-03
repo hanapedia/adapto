@@ -275,37 +275,37 @@ func (arp *AdaptoRTOProvider) onRtt(rtt time.Duration) {
 		arp.failed++
 		rtt = -rtt
 		arp.logger.Debug("DeadlineExceeded", "rto", rtt)
-
-		// Declare overload if max timeout is breached
-		if rtt == arp.max {
-			// declare overload
-			arp.ChokeTimeout()
-			arp.state = OVERLOAD
-
-			// increment so that first interval check is skipped
-			arp.dropped++
-
-			// threshold is then calculated as the average between prevNormalReqs and overloadReq
-			// use shifted overload reference point
-			avgNormalReq := arp.prevNormalReqs.AverageNonZero()
-			overloadReq := arp.OverloadReq(rtt)
-			arp.overloadThresholdReq = max((avgNormalReq+overloadReq)>>1, 1)
-			arp.sendRateInterval = arp.interval / time.Duration(arp.overloadThresholdReq)
-			arp.logger.Info("overload detected",
-				"triggerRTO", rtt,
-				"chokedRTO", arp.timeout,
-				"minRtt", arp.minRtt,
-				"overloadThresholdReq", arp.overloadThresholdReq,
-				"avgNormalReq", avgNormalReq,
-				"overloadReq", overloadReq,
-				"sendRateInterval", arp.sendRateInterval,
-			)
-			return
-		}
 	}
 
 	// skip timeout update when overload
 	if arp.state == OVERLOAD {
+		return
+	}
+
+	// Declare overload if max timeout is breached
+	if rtt == arp.max {
+		// declare overload
+		arp.ChokeTimeout()
+		arp.state = OVERLOAD
+
+		// increment so that first interval check is skipped
+		arp.dropped++
+
+		// threshold is then calculated as the average between prevNormalReqs and overloadReq
+		// use shifted overload reference point
+		avgNormalReq := arp.prevNormalReqs.AverageNonZero()
+		overloadReq := arp.OverloadReq(rtt)
+		arp.overloadThresholdReq = max((avgNormalReq+overloadReq)>>1, 1)
+		arp.sendRateInterval = arp.interval / time.Duration(arp.overloadThresholdReq)
+		arp.logger.Info("overload detected",
+			"triggerRTO", rtt,
+			"chokedRTO", arp.timeout,
+			"minRtt", arp.minRtt,
+			"overloadThresholdReq", arp.overloadThresholdReq,
+			"avgNormalReq", avgNormalReq,
+			"overloadReq", overloadReq,
+			"sendRateInterval", arp.sendRateInterval,
+		)
 		return
 	}
 

@@ -13,16 +13,17 @@ import (
 )
 
 const (
-	DEFAULT_K_MARGIN         int64         = 1
-	DEFAULT_INTERVAL         time.Duration = 5 * time.Second
-	ALPHA_SCALING            int64         = 8
-	LOG2_ALPHA               int64         = 3
-	BETA_SCALING             int64         = 4
-	LOG2_BETA                int64         = 2
-	SLO_SAFETY_MARGIN        float64       = 0.5 // safety margin of 0.5 or division by 2
-	MIN_FAILED_SAMPLES       float64       = 2
-	LOG2_PACING_GAIN         int64         = 5
-	OVERLOAD_DRAIN_INTERVALS int64         = 3 // intervals to choke rto after overload
+	DEFAULT_K_MARGIN                  int64                   = 1
+	DEFAULT_INTERVAL                  time.Duration           = 5 * time.Second
+	DEFAULT_OVERLOAD_DETECTION_TIMING OverloadDetectionTiming = MaxTimeoutExceeded
+	ALPHA_SCALING                     int64                   = 8
+	LOG2_ALPHA                        int64                   = 3
+	BETA_SCALING                      int64                   = 4
+	LOG2_BETA                         int64                   = 2
+	SLO_SAFETY_MARGIN                 float64                 = 0.5 // safety margin of 0.5 or division by 2
+	MIN_FAILED_SAMPLES                float64                 = 2
+	LOG2_PACING_GAIN                  int64                   = 5
+	OVERLOAD_DRAIN_INTERVALS          int64                   = 3 // intervals to choke rto after overload
 )
 
 // DONE(v1.0.14): consider the raional of using negative duration for timedout requests
@@ -41,6 +42,13 @@ const (
 	OVERLOAD
 )
 
+type OverloadDetectionTiming = string
+
+const (
+	MaxTimeoutGenerated OverloadDetectionTiming = "maxTimeoutGenerated"
+	MaxTimeoutExceeded  OverloadDetectionTiming = "maxTimeoutExceeded"
+)
+
 var RequestRateLimitExceeded error = requestRateLimitExceeded{}
 
 type requestRateLimitExceeded struct{}
@@ -56,12 +64,13 @@ func (c ConfigValidationError) Error() string {
 }
 
 type Config struct {
-	Id             string
-	Max            time.Duration // max timeout value allowed
-	Min            time.Duration // min timeout value allowed
-	SLOFailureRate float64       // target failure rate SLO
-	Interval       time.Duration // interval for failure rate calculations
-	KMargin        int64         // starting kMargin for with SLO and static kMargin for without SLO
+	Id                      string
+	Max                     time.Duration           // max timeout value allowed
+	Min                     time.Duration           // min timeout value allowed
+	SLOFailureRate          float64                 // target failure rate SLO
+	Interval                time.Duration           // interval for failure rate calculations
+	KMargin                 int64                   // starting kMargin for with SLO and static kMargin for without SLO
+	OverloadDetectionTiming OverloadDetectionTiming // timing when to check for overload
 
 	Logger logger.Logger // optional logger
 }
@@ -85,6 +94,16 @@ func (c *Config) Validate() *ConfigValidationError {
 	if c.SLOFailureRate != 0 && c.Interval == 0 {
 		c.Logger.Info("SLO is provided but Interval is not, using the default interval", "interval", DEFAULT_INTERVAL)
 		c.Interval = DEFAULT_INTERVAL
+	}
+	if c.OverloadDetectionTiming == "" {
+	}
+	switch c.OverloadDetectionTiming {
+	case MaxTimeoutExceeded:
+	case MaxTimeoutGenerated:
+		break
+	default:
+		c.Logger.Info("SLO is provided but OverloadDetectionTiming is invalid, using the default timing", "timing", DEFAULT_OVERLOAD_DETECTION_TIMING)
+		c.OverloadDetectionTiming = DEFAULT_OVERLOAD_DETECTION_TIMING
 	}
 	return nil
 }
@@ -122,13 +141,13 @@ type AdaptoRTOProvider struct {
 	intervalStart time.Time // timestamp of the beginning of the current interval
 
 	// overload states
-	overloadThresholdReq int64         // number of requests sent for the interval that caused state transition from NORMAL to OVERLOAD
-	queueLength          int64         // number of requests SCHEDULED & suspended for their turn
-	sendRateInterval     time.Duration // per request interval for controlling sending rate at 1 / overloadThresholdReq
-	overloadInterval     int64         // counter for the number of consecutive overload interval
+	overloadThresholdReq    int64         // number of requests sent for the interval that caused state transition from NORMAL to OVERLOAD
+	queueLength             int64         // number of requests SCHEDULED & suspended for their turn
+	sendRateInterval        time.Duration // per request interval for controlling sending rate at 1 / overloadThresholdReq
+	overloadInterval        int64         // counter for the number of consecutive overload interval
+	overloadDetectionTiming OverloadDetectionTiming
 
-	prevNormalReqs *ring.RingBuffer[int64] // ring buffer for recording previous numPrevNormalReqs reqs samples
-	prevSuccRess   *ring.RingBuffer[int64] // ring buffer for recording previous numPrevNormalRess ress samples
+	prevSuccRess *ring.RingBuffer[int64] // ring buffer for recording previous numPrevNormalRess ress samples
 
 	// mutex for synchronizing access to timeout calculation fields
 	mu sync.Mutex
@@ -174,12 +193,12 @@ func NewAdaptoRTOProvider(config Config) *AdaptoRTOProvider {
 		failed:        0,
 		intervalStart: time.Now(),
 		// ring buffer with default size of 2 + ceil(max / inteval)
-		prevNormalReqs: ring.NewRingBuffer[int64](2 + int(math.Ceil(float64(config.Max)/float64(config.Interval)))),
-		prevSuccRess:   ring.NewRingBuffer[int64](2 + int(math.Ceil(float64(config.Max)/float64(config.Interval)))),
+		prevSuccRess: ring.NewRingBuffer[int64](2 + int(math.Ceil(float64(config.Max)/float64(config.Interval)))),
 
-		overloadThresholdReq: 0,
-		queueLength:          0,
-		sendRateInterval:     0,
+		overloadThresholdReq:    0,
+		queueLength:             0,
+		sendRateInterval:        0,
+		overloadDetectionTiming: config.OverloadDetectionTiming,
 
 		sloFailureRateAdjusted: config.SLOFailureRate * SLO_SAFETY_MARGIN,
 		minSamplesRequired:     MIN_FAILED_SAMPLES / (config.SLOFailureRate * SLO_SAFETY_MARGIN),
@@ -203,51 +222,6 @@ func (arp *AdaptoRTOProvider) resetCounters() {
 	arp.res = 0
 	arp.failed = 0
 	arp.dropped = 0
-}
-
-// CurrentReq extraporates current number of requests for the past interval using sliding window
-// this should be used when overload is declared
-// ref: https://blog.cloudflare.com/counting-things-a-lot-of-different-things/
-// should lock rto updates
-func (arp *AdaptoRTOProvider) CurrentReq() int64 {
-	lastNormalReq := arp.prevNormalReqs.GetLast()
-	previousReqEstimate := float64(lastNormalReq) * float64(arp.interval-time.Since(arp.intervalStart)) / float64(arp.interval)
-	arp.logger.Debug("current rate computed",
-		"req", arp.req,
-		"lastNormalReq", lastNormalReq,
-		"previousReqEstimate", previousReqEstimate,
-		"sinceIntervalStart", time.Since(arp.intervalStart),
-		"durationRatio", float64(time.Since(arp.intervalStart))/float64(arp.interval),
-	)
-	return int64(math.Round(previousReqEstimate)) + arp.req
-}
-
-// OverloadReq computes the estimate of instantaneous number of request per interval that triggered overload.
-// the reference time for the sliding window is adjusted by the timeout duration that triggered overload.
-func (arp *AdaptoRTOProvider) OverloadReq(overloadedTimeout time.Duration) int64 {
-	lastNormalReq := arp.prevNormalReqs.GetLast()
-
-	relativeTime := time.Since(arp.intervalStart)
-	referenceTime := relativeTime - overloadedTimeout // could be negative
-	if referenceTime <= 0 {
-		referenceTime *= -1
-		// reference time is in the previous window
-		secondLastNormalReq := arp.prevNormalReqs.GetSecondLast()
-		fromLast := float64(lastNormalReq) * float64(arp.interval-referenceTime) / float64(arp.interval)
-		fromSecondLast := float64(secondLastNormalReq) * float64(referenceTime) / float64(arp.interval)
-		arp.logger.Info("overload req computed",
-			"fromLast", fromLast,
-			"fromSecondLast", fromSecondLast,
-		)
-		return int64(math.Round(fromLast + fromSecondLast))
-	}
-	fromThis := float64(arp.req) * float64(referenceTime) / float64(relativeTime)
-	fromLast := float64(lastNormalReq) * float64(arp.interval-referenceTime) / float64(arp.interval)
-	arp.logger.Info("overload req computed",
-		"fromThis", fromThis,
-		"fromLast", fromLast,
-	)
-	return int64(math.Round(fromThis + fromLast))
 }
 
 // OverloadRes computes the estimate of instantaneous goodput per interval.
@@ -309,28 +283,40 @@ func (arp *AdaptoRTOProvider) onRtt(rtt time.Duration) {
 	}
 
 	// Declare overload if max timeout is breached
-	if rtt == arp.max {
-		// declare overload
-		arp.ChokeTimeout()
-		arp.state = OVERLOAD
-
-		// increment so that first interval check is not skipped even if dropped is 0
-		arp.overloadInterval++
-
-		// define threshold using the res count instead of req
-		arp.overloadThresholdReq = arp.CurrentRes()
-		arp.sendRateInterval = arp.interval / time.Duration(arp.overloadThresholdReq)
-		arp.logger.Info("overload detected",
-			"triggerRTO", rtt,
-			"chokedRTO", arp.timeout,
-			"minRtt", arp.minRtt,
-			"overloadThresholdReq", arp.overloadThresholdReq,
-			"sendRateInterval", arp.sendRateInterval,
-		)
+	if arp.overloadDetectionTiming == MaxTimeoutExceeded && rtt == arp.max {
+		arp.onOverload(rtt)
 		return
 	}
 
+	// compute new timeout with rtt
 	arp.ComputeNewRTO(rtt, true)
+
+	// Declare overload if max timeout is generated
+	if arp.overloadDetectionTiming == MaxTimeoutGenerated && arp.timeout == arp.max {
+		arp.onOverload(rtt)
+	}
+}
+
+// onOverload handles the state updates when overload is detected
+func (arp *AdaptoRTOProvider) onOverload(rtt time.Duration) {
+	// declare overload
+	arp.ChokeTimeout()
+	arp.state = OVERLOAD
+
+	// increment so that first interval check is not skipped even if dropped is 0
+	arp.overloadInterval++
+
+	// define threshold using the res count instead of req
+	arp.overloadThresholdReq = arp.CurrentRes()
+	arp.sendRateInterval = arp.interval / time.Duration(arp.overloadThresholdReq)
+	arp.logger.Info("overload detected",
+		"triggerRTO", rtt,
+		"chokedRTO", arp.timeout,
+		"minRtt", arp.minRtt,
+		"overloadThresholdReq", arp.overloadThresholdReq,
+		"sendRateInterval", arp.sendRateInterval,
+	)
+	return
 }
 
 // onInterval calculates failure rate and adjusts margin
@@ -383,7 +369,6 @@ func (arp *AdaptoRTOProvider) onInterval() {
 	// handle NORMAL state
 	// adjusting kMargin
 	if arp.state == NORMAL {
-		arp.prevNormalReqs.Add(arp.req)
 		arp.prevSuccRess.Add(arp.succeeded())
 		// if the fr for this interval is below threshold, must increment kMargin
 		if fr >= arp.sloFailureRateAdjusted {

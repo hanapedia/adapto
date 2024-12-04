@@ -10,9 +10,9 @@ import (
 
 func TestInitialRTTCalculation(t *testing.T) {
 	config := Config{
-		Id:  "test1",
+		Id:         "test1",
 		SLOLatency: 5 * time.Second,
-		Min: 50 * time.Millisecond,
+		Min:        50 * time.Millisecond,
 	}
 
 	timeout, rttCh, err := GetTimeout(context.Background(), config)
@@ -23,7 +23,7 @@ func TestInitialRTTCalculation(t *testing.T) {
 
 	// Send the first RTT measurement
 	firstRTT := 100 * time.Millisecond
-	rttCh <- firstRTT
+	rttCh <- RttSignal{Duration: firstRTT, Type: Successful}
 	time.Sleep(100 * time.Millisecond)
 
 	// Verify initial SRTT, RTTVAR, and Timeout
@@ -40,9 +40,9 @@ func TestInitialRTTCalculation(t *testing.T) {
 
 func TestRegularRTTUpdates(t *testing.T) {
 	config := Config{
-		Id:  "test2",
+		Id:         "test2",
 		SLOLatency: 5 * time.Second,
-		Min: 50 * time.Millisecond,
+		Min:        50 * time.Millisecond,
 	}
 
 	timeout, rttCh, err := GetTimeout(context.Background(), config)
@@ -54,7 +54,7 @@ func TestRegularRTTUpdates(t *testing.T) {
 	// Simulate multiple RTT updates
 	rttValues := []time.Duration{100 * time.Millisecond, 200 * time.Millisecond, 150 * time.Millisecond}
 	for _, rtt := range rttValues {
-		rttCh <- rtt
+		rttCh <- RttSignal{Duration: rtt, Type: Successful}
 	}
 
 	// Allow time for processing and check updated values
@@ -70,9 +70,9 @@ func TestRegularRTTUpdates(t *testing.T) {
 
 func TestMinMaxConstraints(t *testing.T) {
 	config := Config{
-		Id:  "test4",
+		Id:         "test4",
 		SLOLatency: 5 * time.Second,
-		Min: 500 * time.Millisecond,
+		Min:        500 * time.Millisecond,
 	}
 
 	_, rttCh, err := GetTimeout(context.Background(), config)
@@ -81,7 +81,7 @@ func TestMinMaxConstraints(t *testing.T) {
 	provider := AdaptoRTOProviders[config.Id]
 
 	// Send low RTT to check min constraint
-	rttCh <- 10 * time.Millisecond
+	rttCh <- RttSignal{Duration: 10 * time.Millisecond, Type: Successful}
 	time.Sleep(50 * time.Millisecond)
 
 	provider.mu.Lock()
@@ -89,7 +89,7 @@ func TestMinMaxConstraints(t *testing.T) {
 	provider.mu.Unlock()
 
 	// Send high RTT to check max constraint
-	rttCh <- 10 * time.Second
+	rttCh <- RttSignal{Duration: 10 * time.Second, Type: Successful}
 	time.Sleep(50 * time.Millisecond)
 	provider.mu.Lock()
 	assert.LessOrEqual(t, provider.timeout, config.SLOLatency, "Timeout should not exceed maximum")

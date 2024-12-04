@@ -22,7 +22,7 @@ func TestStartWithSLO(t *testing.T) {
 	logger := logger.NewDefaultLogger()
 	config := rto.Config{
 		Id:             "test1",
-		SLOLatency:            100 * time.Millisecond,
+		SLOLatency:     100 * time.Millisecond,
 		Min:            1 * time.Millisecond,
 		SLOFailureRate: 0.01,
 		Interval:       5 * time.Second,
@@ -119,7 +119,7 @@ func TestStartOverload(t *testing.T) {
 	logger := logger.NewDefaultLogger()
 	config := rto.Config{
 		Id:             "test1",
-		SLOLatency:            100 * time.Millisecond,
+		SLOLatency:     100 * time.Millisecond,
 		Min:            1 * time.Millisecond,
 		SLOFailureRate: 0.01,
 		Interval:       5 * time.Second,
@@ -172,6 +172,7 @@ func TestStartOverload(t *testing.T) {
 		"ab_avg_rto", float64(abrtoSum)/float64(abtotal),
 	)
 }
+
 // generateNormalSamples generates a slice of n int64 samples from a normal distribution
 // with a specified mean and standard deviation.
 func generateNormalSamples(n int, mean, std float64) []float64 {
@@ -208,11 +209,11 @@ func simulateRequest(t *testing.T, rtt float64, config rto.Config, wg *sync.Wait
 	if timeout < rttD {
 		time.Sleep(timeout)
 		/* logger.Error("timeout exceeded", "rto", timeout, "rrtD", rttD.String()) */
-		rttCh <- -timeout
+		rttCh <- rto.RttSignal{Duration: timeout, Type: rto.TimeoutError}
 		wg.Done()
 	} else {
 		time.Sleep(rttD)
-		rttCh <- rttD
+		rttCh <- rto.RttSignal{Duration: rttD, Type: rto.Successful}
 		wg.Done()
 	}
 	resCh <- Res{rto: timeout, rtt: rttD}

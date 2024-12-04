@@ -31,8 +31,21 @@ const (
 // in that case, there is no need to define DeadlineExceeded.
 // this will be breaking change for the users
 
-// RttSignal is alias for time.Duration that is used for typing the channel used to report rtt.
-type RttSignal = time.Duration
+// RttSignal is used for reporting rtt.
+type RttSignal struct {
+	Duration time.Duration
+	Type     SignalType
+}
+
+type SignalType = int64
+
+const (
+	Successful SignalType = iota
+	// GenericError should be used to signal non-timeout errors.
+	// this only counts the failed but do not record rtt
+	GenericError
+	TimeoutError
+)
 
 // State enum for main state machine
 type RTOProviderState = int64
@@ -65,7 +78,7 @@ func (c ConfigValidationError) Error() string {
 
 type Config struct {
 	Id                      string
-	SLOLatency                     time.Duration           // max timeout value allowed
+	SLOLatency              time.Duration           // max timeout value allowed
 	Min                     time.Duration           // min timeout value allowed
 	SLOFailureRate          float64                 // target failure rate SLO
 	Interval                time.Duration           // interval for failure rate calculations
@@ -163,7 +176,7 @@ type AdaptoRTOProvider struct {
 	// configuration fields
 	id             string
 	min            time.Duration
-	sloLatency            time.Duration
+	sloLatency     time.Duration
 	sloFailureRate float64       // slo failure rate
 	interval       time.Duration // interval for computing failure rate.
 }
@@ -207,7 +220,7 @@ func NewAdaptoRTOProvider(config Config) *AdaptoRTOProvider {
 		rttCh:          make(chan RttSignal),
 		id:             config.Id,
 		min:            config.Min,
-		sloLatency:            config.SLOLatency,
+		sloLatency:     config.SLOLatency,
 		sloFailureRate: config.SLOFailureRate,
 		interval:       config.Interval,
 	}
@@ -259,41 +272,47 @@ func (arp *AdaptoRTOProvider) ChokeTimeout() {
 // if max timeout is breached, declares overload for new rtt
 // else computes the new timeout for the rtt
 // MUST be called in thread safe manner as it does not lock mu
-func (arp *AdaptoRTOProvider) onRtt(rtt time.Duration) {
+func (arp *AdaptoRTOProvider) onRtt(signal RttSignal) {
 	arp.res++ // increment res counter
-	if rtt > 0 {
-		arp.minRtt = min(rtt, arp.minRtt) // update minimum rtt
-	} else {
+	if signal.Type == GenericError {
+		// increment failed counter and return
+		arp.failed++
+		arp.logger.Debug("Generic Error", "rto", signal.Duration)
+		return
+	}
+	if signal.Type == Successful {
+		arp.minRtt = min(signal.Duration, arp.minRtt) // update minimum rtt
+	}
+	if signal.Type == TimeoutError {
 		// increment failed counter
 		arp.failed++
-		rtt = -rtt
-		arp.logger.Debug("DeadlineExceeded", "rto", rtt)
+		arp.logger.Debug("Timeout Error", "rto", signal.Duration)
 	}
 
 	// skip timeout update when overload
 	if arp.state == OVERLOAD {
 		// only start updating rto some intervals after overload declaration
 		// until then, update only srtt and rttvar with choked timeout
-		arp.ComputeNewRTO(rtt, arp.overloadInterval > OVERLOAD_DRAIN_INTERVALS)
+		arp.ComputeNewRTO(signal.Duration, arp.overloadInterval > OVERLOAD_DRAIN_INTERVALS)
 		if arp.timeout > arp.sloLatency>>1 {
 			arp.timeout = arp.sloLatency >> 1
-			arp.logger.Info("rto maxed out", "rto", arp.timeout.String(), "rtt", rtt.String())
+			arp.logger.Info("rto maxed out", "rto", arp.timeout.String(), "rtt", signal.Duration.String())
 		}
 		return
 	}
 
 	// Declare overload if max timeout is breached
-	if arp.overloadDetectionTiming == MaxTimeoutExceeded && rtt == arp.sloLatency {
-		arp.onOverload(rtt)
+	if arp.overloadDetectionTiming == MaxTimeoutExceeded && signal.Duration == arp.sloLatency {
+		arp.onOverload(signal.Duration)
 		return
 	}
 
 	// compute new timeout with rtt
-	arp.ComputeNewRTO(rtt, true)
+	arp.ComputeNewRTO(signal.Duration, true)
 
 	// Declare overload if max timeout is generated
 	if arp.overloadDetectionTiming == MaxTimeoutGenerated && arp.timeout == arp.sloLatency {
-		arp.onOverload(rtt)
+		arp.onOverload(signal.Duration)
 	}
 }
 

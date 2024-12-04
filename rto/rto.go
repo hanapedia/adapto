@@ -65,7 +65,7 @@ func (c ConfigValidationError) Error() string {
 
 type Config struct {
 	Id                      string
-	Max                     time.Duration           // max timeout value allowed
+	SLOLatency                     time.Duration           // max timeout value allowed
 	Min                     time.Duration           // min timeout value allowed
 	SLOFailureRate          float64                 // target failure rate SLO
 	Interval                time.Duration           // interval for failure rate calculations
@@ -82,7 +82,7 @@ func (c *Config) Validate() *ConfigValidationError {
 	if c.Id == "" {
 		return &ConfigValidationError{msg: "Id is required"}
 	}
-	if c.Max == 0 {
+	if c.SLOLatency == 0 {
 		return &ConfigValidationError{msg: "Max is required"}
 	}
 	if c.Min == 0 {
@@ -163,7 +163,7 @@ type AdaptoRTOProvider struct {
 	// configuration fields
 	id             string
 	min            time.Duration
-	max            time.Duration
+	sloLatency            time.Duration
 	sloFailureRate float64       // slo failure rate
 	interval       time.Duration // interval for computing failure rate.
 }
@@ -180,20 +180,20 @@ func NewAdaptoRTOProvider(config Config) *AdaptoRTOProvider {
 	return &AdaptoRTOProvider{
 		logger:  l,
 		state:   NORMAL,
-		timeout: config.Max,
+		timeout: config.SLOLatency,
 
 		srtt:    0,
 		rttvar:  0,
 		kMargin: kMargin,
 
-		minRtt: config.Max,
+		minRtt: config.SLOLatency,
 
 		req:           0,
 		res:           0,
 		failed:        0,
 		intervalStart: time.Now(),
 		// ring buffer with default size of 2 + ceil(max / inteval)
-		prevSuccRess: ring.NewRingBuffer[int64](2 + int(math.Ceil(float64(config.Max)/float64(config.Interval)))),
+		prevSuccRess: ring.NewRingBuffer[int64](2 + int(math.Ceil(float64(config.SLOLatency)/float64(config.Interval)))),
 
 		overloadThresholdReq:    0,
 		queueLength:             0,
@@ -207,7 +207,7 @@ func NewAdaptoRTOProvider(config Config) *AdaptoRTOProvider {
 		rttCh:          make(chan RttSignal),
 		id:             config.Id,
 		min:            config.Min,
-		max:            config.Max,
+		sloLatency:            config.SLOLatency,
 		sloFailureRate: config.SLOFailureRate,
 		interval:       config.Interval,
 	}
@@ -251,7 +251,7 @@ func (arp *AdaptoRTOProvider) ChokeTimeout() {
 
 	// compute rto with formula for first rtt observed.
 	rto := arp.minRtt + time.Duration(arp.kMargin*rttvar) // because rtt = srtt / 8
-	arp.timeout = min(max(rto, arp.min), arp.max)
+	arp.timeout = min(max(rto, arp.min), arp.sloLatency)
 }
 
 // onRtt handles new rtt event
@@ -275,15 +275,15 @@ func (arp *AdaptoRTOProvider) onRtt(rtt time.Duration) {
 		// only start updating rto some intervals after overload declaration
 		// until then, update only srtt and rttvar with choked timeout
 		arp.ComputeNewRTO(rtt, arp.overloadInterval > OVERLOAD_DRAIN_INTERVALS)
-		if arp.timeout > arp.max>>1 {
-			arp.timeout = arp.max >> 1
+		if arp.timeout > arp.sloLatency>>1 {
+			arp.timeout = arp.sloLatency >> 1
 			arp.logger.Info("rto maxed out", "rto", arp.timeout.String(), "rtt", rtt.String())
 		}
 		return
 	}
 
 	// Declare overload if max timeout is breached
-	if arp.overloadDetectionTiming == MaxTimeoutExceeded && rtt == arp.max {
+	if arp.overloadDetectionTiming == MaxTimeoutExceeded && rtt == arp.sloLatency {
 		arp.onOverload(rtt)
 		return
 	}
@@ -292,7 +292,7 @@ func (arp *AdaptoRTOProvider) onRtt(rtt time.Duration) {
 	arp.ComputeNewRTO(rtt, true)
 
 	// Declare overload if max timeout is generated
-	if arp.overloadDetectionTiming == MaxTimeoutGenerated && arp.timeout == arp.max {
+	if arp.overloadDetectionTiming == MaxTimeoutGenerated && arp.timeout == arp.sloLatency {
 		arp.onOverload(rtt)
 	}
 }
@@ -476,7 +476,7 @@ func (arp *AdaptoRTOProvider) NewTimeout(ctx context.Context) (timeout time.Dura
 	// suspend = arp.schedulingInterval * arp.queueLength
 	if arp.state == OVERLOAD {
 		suspend := arp.sendRateInterval * time.Duration(arp.queueLength)
-		adjustedTimeout := arp.max - suspend
+		adjustedTimeout := arp.sloLatency - suspend
 		if adjustedTimeout < arp.timeout {
 			arp.dropped++
 			arp.logger.Debug("new timeout dropped",
@@ -526,7 +526,7 @@ func (arp *AdaptoRTOProvider) ComputeNewRTO(rtt time.Duration, updateTimeout boo
 		arp.srtt = int64(rtt) * ALPHA_SCALING                   // use the scaled srtt for Jacobson. R * 8 since alpha = 1/8
 		arp.rttvar = (int64(rtt) >> 1) * BETA_SCALING           // use the scaled rttvar for Jacobson. (R / 2) * 4 since beta = 1/4
 		rto := rtt + time.Duration(DEFAULT_K_MARGIN*arp.rttvar) // because rtt = srtt / 8
-		arp.timeout = min(max(rto, arp.min), arp.max)
+		arp.timeout = min(max(rto, arp.min), arp.sloLatency)
 		arp.logger.Debug("new RTO computed", "rto", arp.timeout.String(), "rtt", rtt.String())
 		return
 	}
@@ -539,7 +539,7 @@ func (arp *AdaptoRTOProvider) ComputeNewRTO(rtt time.Duration, updateTimeout boo
 	if !updateTimeout {
 		return
 	}
-	arp.timeout = min(max(time.Duration(rto), arp.min), arp.max)
+	arp.timeout = min(max(time.Duration(rto), arp.min), arp.sloLatency)
 	arp.logger.Debug("new RTO computed", "rto", arp.timeout.String(), "rtt", rtt.String())
 }
 

@@ -11,13 +11,13 @@ import (
 func TestInitialRTTCalculation(t *testing.T) {
 	config := Config{
 		Id:  "test1",
-		Max: 5 * time.Second,
+		SLOLatency: 5 * time.Second,
 		Min: 50 * time.Millisecond,
 	}
 
 	timeout, rttCh, err := GetTimeout(context.Background(), config)
 	assert.NoError(t, err, "Error should be nil for GetTimeout")
-	assert.Equal(t, config.Max, timeout, "Initial timeout should match config max")
+	assert.Equal(t, config.SLOLatency, timeout, "Initial timeout should match config max")
 
 	provider := AdaptoRTOProviders[config.Id]
 
@@ -41,13 +41,13 @@ func TestInitialRTTCalculation(t *testing.T) {
 func TestRegularRTTUpdates(t *testing.T) {
 	config := Config{
 		Id:  "test2",
-		Max: 5 * time.Second,
+		SLOLatency: 5 * time.Second,
 		Min: 50 * time.Millisecond,
 	}
 
 	timeout, rttCh, err := GetTimeout(context.Background(), config)
 	assert.NoError(t, err, "Error should be nil for GetTimeout")
-	assert.Equal(t, config.Max, timeout, "Initial timeout should match config max")
+	assert.Equal(t, config.SLOLatency, timeout, "Initial timeout should match config max")
 
 	provider := AdaptoRTOProviders[config.Id]
 
@@ -71,7 +71,7 @@ func TestRegularRTTUpdates(t *testing.T) {
 func TestMinMaxConstraints(t *testing.T) {
 	config := Config{
 		Id:  "test4",
-		Max: 5 * time.Second,
+		SLOLatency: 5 * time.Second,
 		Min: 500 * time.Millisecond,
 	}
 
@@ -92,6 +92,6 @@ func TestMinMaxConstraints(t *testing.T) {
 	rttCh <- 10 * time.Second
 	time.Sleep(50 * time.Millisecond)
 	provider.mu.Lock()
-	assert.LessOrEqual(t, provider.timeout, config.Max, "Timeout should not exceed maximum")
+	assert.LessOrEqual(t, provider.timeout, config.SLOLatency, "Timeout should not exceed maximum")
 	provider.mu.Unlock()
 }

@@ -22,7 +22,7 @@ func TestStartWithSLO(t *testing.T) {
 	logger := logger.NewDefaultLogger()
 	config := rto.Config{
 		Id:             "test1",
-		Max:            100 * time.Millisecond,
+		SLOLatency:            100 * time.Millisecond,
 		Min:            1 * time.Millisecond,
 		SLOFailureRate: 0.01,
 		Interval:       5 * time.Second,
@@ -119,7 +119,7 @@ func TestStartOverload(t *testing.T) {
 	logger := logger.NewDefaultLogger()
 	config := rto.Config{
 		Id:             "test1",
-		Max:            100 * time.Millisecond,
+		SLOLatency:            100 * time.Millisecond,
 		Min:            1 * time.Millisecond,
 		SLOFailureRate: 0.01,
 		Interval:       5 * time.Second,

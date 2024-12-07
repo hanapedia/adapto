@@ -152,11 +152,12 @@ type AdaptoRTOProvider struct {
 	dropped       int64     // number of request dropped due to sending rate control
 	intervalStart time.Time // timestamp of the beginning of the current interval
 
-	overloadDetectionTiming OverloadDetectionTiming
 	// states for overload control
 	overloadThresholdReq            int64                   // number of requests allowed in an interval during overload
 	queueLength                     int64                   // number of requests SCHEDULED & suspended, waiting for their turn
 	sendRateInterval                time.Duration           // pacing interval for controlling sending rate at overloadThresholdReq / interval
+	overloadDrainIntervalsRemaining uint64                  // counter for the number of drain intervals remaining
+	consecutivePacingGains          uint64                  // counter for the number of consecutive pacing gains
 	prevSuccRess                    *ring.RingBuffer[int64] // ring buffer for recording previous numPrevNormalRess ress samples
 
 	// mutex for synchronizing access to timeout calculation fields
@@ -255,7 +256,11 @@ func (arp *AdaptoRTOProvider) ChokeTimeout() {
 	rttvar := (int64(arp.minRtt) >> 1) * BETA_SCALING
 
 	// compute rto with formula for first rtt observed.
-	rto := arp.minRtt + time.Duration(arp.kMargin*rttvar) // because rtt = srtt / 8
+	// TODO: whether to use DEFAULT_K_MARGIN or the adjusted kMargin is up for debate.
+	// choke timeout will be called when server is likely to have built queues
+	// timoeut is choked for OVERLOAD_DRAIN_INTERVALS intervals and then starts adjusting in overload
+	/* rto := arp.minRtt + time.Duration(arp.kMargin*rttvar) // because rtt = srtt / 8 */
+	rto := arp.minRtt + time.Duration(DEFAULT_K_MARGIN*rttvar) // because rtt = srtt / 8
 	arp.timeout = min(max(rto, arp.min), arp.sloLatency)
 }
 
@@ -285,9 +290,17 @@ func (arp *AdaptoRTOProvider) onRtt(signal RttSignal) {
 	if arp.state == OVERLOAD {
 		// only start updating rto some intervals after overload declaration
 		// until then, update only srtt and rttvar with choked timeout
-		arp.ComputeNewRTO(signal.Duration, arp.overloadInterval > OVERLOAD_DRAIN_INTERVALS)
-		if arp.timeout > arp.sloLatency>>1 {
-			arp.timeout = arp.sloLatency >> 1
+		arp.ComputeNewRTO(signal.Duration, arp.overloadDrainIntervalsRemaining == 0)
+		// check that the timeout leaves enough room to fit at least 1 req
+		// if not, it is likely to be sending too fast,
+		// so rechoke timeout and reset overloadDrainIntervalsRemaining to stabilize sending rate
+		if arp.timeout > arp.sloLatency-arp.sendRateInterval {
+			// rechoke and drain
+			arp.ChokeTimeout()
+			arp.overloadDrainIntervalsRemaining = OVERLOAD_DRAIN_INTERVALS
+			// enforce pacing rate
+			arp.overloadThresholdReq = max(arp.CurrentRes(), 1)
+			arp.sendRateInterval = arp.interval / time.Duration(arp.overloadThresholdReq)
 			arp.logger.Info("rto maxed out", "rto", arp.timeout.String(), "rtt", signal.Duration.String())
 		}
 		return
@@ -315,10 +328,11 @@ func (arp *AdaptoRTOProvider) onOverload(rtt time.Duration) {
 	arp.state = OVERLOAD
 
 	// increment so that first interval check is not skipped even if dropped is 0
-	arp.overloadInterval++
+	arp.overloadDrainIntervalsRemaining = OVERLOAD_DRAIN_INTERVALS
 
 	// define threshold using the res count instead of req
-	arp.overloadThresholdReq = arp.CurrentRes()
+	// take max with 1 to ensure that at least 1 request is sent even during failure
+	arp.overloadThresholdReq = max(arp.CurrentRes(), 1)
 	arp.sendRateInterval = arp.interval / time.Duration(arp.overloadThresholdReq)
 	arp.logger.Info("overload detected",
 		"triggerRTO", rtt,
@@ -397,42 +411,40 @@ func (arp *AdaptoRTOProvider) onInterval() {
 	}
 
 	// handle OVERLOAD state
+	// skip interval if still draining
+	if arp.overloadDrainIntervalsRemaining > 0 {
+		arp.overloadDrainIntervalsRemaining--
+		return
+	}
 	// TODO: should consider if this threshold is rationale
 	// adjusting pacing
-	if arp.dropped > 0 || arp.overloadInterval == 1 {
+	if arp.dropped > 0 {
 		// stil in overload
-		arp.overloadInterval++
 		if fr >= arp.sloFailureRateAdjusted {
 			// shrink pacing to res
-			arp.overloadThresholdReq = arp.succeeded()
+			arp.overloadThresholdReq = max(arp.succeeded(), 1) // make sure to max with 1
 			arp.sendRateInterval = arp.interval / time.Duration(
 				arp.overloadThresholdReq,
 			)
+			arp.consecutivePacingGains = 0 // reset consecutive gains
 			arp.logger.Info("still in overload, shrinking pacing", "sendRateInterval", arp.sendRateInterval, "overloadThresholdReq", arp.overloadThresholdReq, "dropped", arp.dropped, "req", arp.req)
 			return
 		}
-		// gain pacing by x1.125
-		// TODO: consider resetting pacing gain or cycling
-		// gain pacing if long term fr is at acceptable level
-		arp.overloadThresholdReq += arp.overloadThresholdReq >> LOG2_PACING_GAIN
+		// gain pacing by x1.125 x 2^consecutivePacingGains
+		// this helps faster recovery of pacing from circuit broken state
+		arp.overloadThresholdReq += max(arp.overloadThresholdReq>>LOG2_PACING_GAIN, 1) << arp.consecutivePacingGains
 		arp.sendRateInterval = arp.interval / time.Duration(
 			arp.overloadThresholdReq,
 		)
+		arp.consecutivePacingGains++
 		arp.logger.Info("still in overload, growing pacing", "sendRateInterval", arp.sendRateInterval, "overloadThresholdReq", arp.overloadThresholdReq, "dropped", arp.dropped, "req", arp.req)
 		return
 	}
-	// undeclare overload
-	arp.logger.Info("overload resolved", "overloadThresholdReq", arp.overloadThresholdReq, "dropped", arp.dropped, "req", arp.req)
-	arp.overloadThresholdReq = 0
-	arp.sendRateInterval = 0
-	arp.queueLength = 0
-	arp.overloadInterval = 0
 
-	// reset timeout computation
-	// NO NEED TO since they are updated even during overload
-	/* arp.srtt = 0 */
-	/* arp.rttvar = 0 */
+	// undeclare overload
+	// no need to reset variables as they are all reset at the beginning of interval
 	arp.state = NORMAL
+	arp.logger.Info("overload resolved", "overloadThresholdReq", arp.overloadThresholdReq, "dropped", arp.dropped, "req", arp.req)
 }
 
 // calcInflight calculates current inflight requests.

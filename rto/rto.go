@@ -13,23 +13,25 @@ import (
 )
 
 const (
+	// Configurable parameters
 	DEFAULT_K_MARGIN                  int64                   = 1
 	DEFAULT_INTERVAL                  time.Duration           = 5 * time.Second
 	DEFAULT_OVERLOAD_DETECTION_TIMING OverloadDetectionTiming = MaxTimeoutExceeded
-	ALPHA_SCALING                     int64                   = 8
-	LOG2_ALPHA                        int64                   = 3
-	BETA_SCALING                      int64                   = 4
-	LOG2_BETA                         int64                   = 2
-	SLO_SAFETY_MARGIN                 float64                 = 0.5 // safety margin of 0.5 or division by 2
-	MIN_FAILED_SAMPLES                float64                 = 2
-	LOG2_PACING_GAIN                  int64                   = 5
-	OVERLOAD_DRAIN_INTERVALS          int64                   = 3 // intervals to choke rto after overload
-)
 
-// DONE(v1.0.14): consider the raional of using negative duration for timedout requests
-// so that the duration that just timed out can be transferred and used
-// in that case, there is no need to define DeadlineExceeded.
-// this will be breaking change for the users
+	// Constant parameters. Alpha and Beta for Retransmission Timeout
+	// Defined by  V. Jacobson, “Congestion avoidance and control,” SIGCOMM Comput.Commun.
+	ALPHA_SCALING int64 = 8
+	LOG2_ALPHA    int64 = 3
+	BETA_SCALING  int64 = 4
+	LOG2_BETA     int64 = 2
+
+	// Tunable parameters
+	// The values set for these constant leaves room for tuning
+	SLO_SAFETY_MARGIN        float64 = 0.5 // safety margin of 0.5 or division by 2
+	MIN_FAILED_SAMPLES       float64 = 2   // minimum failed samples reqruired to compute failure rate
+	LOG2_PACING_GAIN         int64   = 5   // used as pacing gain factor. 1+ 1 >> LOG2_PACING_GAIN
+	OVERLOAD_DRAIN_INTERVALS uint64  = 3   // intervals to choke rto after overload. TODO: reduce this
+)
 
 // RttSignal is used for reporting rtt.
 type RttSignal struct {
@@ -128,23 +130,20 @@ type AdaptoRTOProvider struct {
 	// Main state machine
 	state RTOProviderState
 
-	// fields with synchronized access
+	// timeout value returned when new timeout is requested
 	timeout time.Duration
 
 	// values used in timeout calculations and adjusted dynamically
-	srtt    int64 // smoothed rtt
-	rttvar  int64
+	srtt    int64   // smoothed rtt
+	rttvar  int64   // variance of rtt
 	kMargin int64   // extra margin multiplied to the origin K=4
-	backoff int64   // backoff multiplier
 	sfr     float64 // smoothed failure rate computed as moving average.
-	lastFr  float64 // most recent failure rate
+	lastFr  float64 // most recent failure rate. not smoothed
 
 	// keep track of minimum RTT to fallback to
 	minRtt time.Duration
 
-	// counters for failure rate and inflight
-	// inflight should be computed by req - recv
-	// failure rate should be computed by failed / recv
+	// per Interval counters
 	// these counters are cleared per interval
 	req           int64     // number of requests sent
 	res           int64     // number of responses received
@@ -153,14 +152,12 @@ type AdaptoRTOProvider struct {
 	dropped       int64     // number of request dropped due to sending rate control
 	intervalStart time.Time // timestamp of the beginning of the current interval
 
-	// overload states
-	overloadThresholdReq    int64         // number of requests sent for the interval that caused state transition from NORMAL to OVERLOAD
-	queueLength             int64         // number of requests SCHEDULED & suspended for their turn
-	sendRateInterval        time.Duration // per request interval for controlling sending rate at 1 / overloadThresholdReq
-	overloadInterval        int64         // counter for the number of consecutive overload interval
 	overloadDetectionTiming OverloadDetectionTiming
-
-	prevSuccRess *ring.RingBuffer[int64] // ring buffer for recording previous numPrevNormalRess ress samples
+	// states for overload control
+	overloadThresholdReq            int64                   // number of requests allowed in an interval during overload
+	queueLength                     int64                   // number of requests SCHEDULED & suspended, waiting for their turn
+	sendRateInterval                time.Duration           // pacing interval for controlling sending rate at overloadThresholdReq / interval
+	prevSuccRess                    *ring.RingBuffer[int64] // ring buffer for recording previous numPrevNormalRess ress samples
 
 	// mutex for synchronizing access to timeout calculation fields
 	mu sync.Mutex
@@ -169,9 +166,10 @@ type AdaptoRTOProvider struct {
 	// in the event of timeout, sender should send `DeadlineExceeded` signal
 	rttCh chan RttSignal
 
-	sloFailureRateAdjusted float64 // slo with safety margin.
-	minSamplesRequired     float64 // minimum samples required to compute failure rate
-	sfrWeight              float64
+	// fields computed at initialization with config values to reduce computation
+	sloFailureRateAdjusted float64 // slo with safety margin. Depends on sloFailureRate.
+	minSamplesRequired     float64 // minimum samples required to compute failure rate. Depends on sloFailureRate.
+	sfrWeight              float64 // smoothing factor for computing long-term failure rate. Depends on interval.
 
 	// configuration fields
 	id             string
@@ -179,6 +177,8 @@ type AdaptoRTOProvider struct {
 	sloLatency     time.Duration
 	sloFailureRate float64       // slo failure rate
 	interval       time.Duration // interval for computing failure rate.
+	// TODO: could consider other timings
+	overloadDetectionTiming OverloadDetectionTiming
 }
 
 func NewAdaptoRTOProvider(config Config) *AdaptoRTOProvider {
@@ -195,22 +195,14 @@ func NewAdaptoRTOProvider(config Config) *AdaptoRTOProvider {
 		state:   NORMAL,
 		timeout: config.SLOLatency,
 
-		srtt:    0,
-		rttvar:  0,
 		kMargin: kMargin,
 
 		minRtt: config.SLOLatency,
 
-		req:           0,
-		res:           0,
-		failed:        0,
 		intervalStart: time.Now(),
 		// ring buffer with default size of 2 + ceil(max / inteval)
 		prevSuccRess: ring.NewRingBuffer[int64](2 + int(math.Ceil(float64(config.SLOLatency)/float64(config.Interval)))),
 
-		overloadThresholdReq:    0,
-		queueLength:             0,
-		sendRateInterval:        0,
 		overloadDetectionTiming: config.OverloadDetectionTiming,
 
 		sloFailureRateAdjusted: config.SLOFailureRate * SLO_SAFETY_MARGIN,
@@ -347,10 +339,11 @@ func (arp *AdaptoRTOProvider) onOverload(rtt time.Duration) {
 //
 // if the main state machine is in OVERLOAD state:
 //   - kMargin is not updated no matter the failure rate
+//   - return immediately if in draining stage.
 //   - if dropped is 0, reset overloadThresholdReq, and set main state to NORMAL
 //   - otherwise check if the failure rate excluding dropped is withing the SLO.
 //   - if yes, attempt to grow the threshold, and increase sending rate
-//   - if not, shring the threshold
+//   - if not, shrink the threshold
 //
 // NOTE: this should be the only way margin is mutated
 // NOTE: the state transition NORMAL -> OVERLOAD is not handled here

@@ -30,7 +30,7 @@ const (
 	SLO_SAFETY_MARGIN        float64 = 0.5 // safety margin of 0.5 or division by 2
 	MIN_FAILED_SAMPLES       float64 = 2   // minimum failed samples reqruired to compute failure rate
 	LOG2_PACING_GAIN         int64   = 5   // used as pacing gain factor. 1+ 1 >> LOG2_PACING_GAIN
-	OVERLOAD_DRAIN_INTERVALS uint64  = 3   // intervals to choke rto after overload. TODO: reduce this
+	OVERLOAD_DRAIN_INTERVALS uint64  = 2   // intervals to choke rto after overload. TODO: reduce this
 )
 
 // RttSignal is used for reporting rtt.
@@ -332,14 +332,15 @@ func (arp *AdaptoRTOProvider) onOverload(rtt time.Duration) {
 
 	// define threshold using the res count instead of req
 	// take max with 1 to ensure that at least 1 request is sent even during failure
-	arp.overloadThresholdReq = max(arp.CurrentRes(), 1)
-	arp.sendRateInterval = arp.interval / time.Duration(arp.overloadThresholdReq)
+	// TODO: move the initial computation of sending rate interval to when drain interval is over
+	/* arp.overloadThresholdReq = max(arp.CurrentRes(), 1) */
+	/* arp.sendRateInterval = arp.interval / time.Duration(arp.overloadThresholdReq) */
 	arp.logger.Info("overload detected",
 		"triggerRTO", rtt,
 		"chokedRTO", arp.timeout,
 		"minRtt", arp.minRtt,
-		"overloadThresholdReq", arp.overloadThresholdReq,
-		"sendRateInterval", arp.sendRateInterval,
+		/* "overloadThresholdReq", arp.overloadThresholdReq, */
+		/* "sendRateInterval", arp.sendRateInterval, */
 	)
 	return
 }
@@ -414,6 +415,14 @@ func (arp *AdaptoRTOProvider) onInterval() {
 	// skip interval if still draining
 	if arp.overloadDrainIntervalsRemaining > 0 {
 		arp.overloadDrainIntervalsRemaining--
+		if arp.overloadDrainIntervalsRemaining == 0 {
+			arp.overloadThresholdReq = max(arp.CurrentRes(), 1)
+			arp.sendRateInterval = arp.interval / time.Duration(arp.overloadThresholdReq)
+			arp.logger.Info("overload draining intervals complete, enforcing pacing",
+				"overloadThresholdReq", arp.overloadThresholdReq,
+				"sendRateInterval", arp.sendRateInterval,
+			)
+		}
 		return
 	}
 	// TODO: should consider if this threshold is rationale
@@ -499,6 +508,13 @@ func (arp *AdaptoRTOProvider) NewTimeout(ctx context.Context) (timeout time.Dura
 	// nextSchedulable = schedule interval * requests already in line + time.Now()
 	// suspend = arp.schedulingInterval * arp.queueLength
 	if arp.state == OVERLOAD {
+		// TODO: consider waiting for the draining intervals before applying pacing
+		// it could improve the accuracy of the initial capacity estimation
+		// it could also prevent overly cautious control at relatively milder overload
+		if arp.overloadDrainIntervalsRemaining > 0 {
+			return arp.timeout, rttCh, nil
+		}
+
 		suspend := arp.sendRateInterval * time.Duration(arp.queueLength)
 		adjustedTimeout := arp.sloLatency - suspend
 		if adjustedTimeout < arp.timeout {

@@ -30,7 +30,7 @@ const (
 	SLO_SAFETY_MARGIN        float64 = 0.5 // safety margin of 0.5 or division by 2
 	MIN_FAILED_SAMPLES       float64 = 2   // minimum failed samples reqruired to compute failure rate
 	LOG2_PACING_GAIN         int64   = 5   // used as pacing gain factor. 1+ 1 >> LOG2_PACING_GAIN
-	OVERLOAD_DRAIN_INTERVALS uint64  = 2   // intervals to choke rto after overload. TODO: reduce this
+	DEFAULT_OVERLOAD_DRAIN_INTERVALS uint64  = 2   // intervals to choke rto after overload. TODO: reduce this
 )
 
 // RttSignal is used for reporting rtt.
@@ -86,6 +86,7 @@ type Config struct {
 	Interval                time.Duration           // interval for failure rate calculations
 	KMargin                 int64                   // starting kMargin for with SLO and static kMargin for without SLO
 	OverloadDetectionTiming OverloadDetectionTiming // timing when to check for overload
+	OverloadDrainIntervals  uint64                  // number of intervals to drain overloading requests
 
 	Logger logger.Logger // optional logger
 }
@@ -110,7 +111,8 @@ func (c *Config) Validate() *ConfigValidationError {
 		c.Logger.Info("SLO is provided but Interval is not, using the default interval", "interval", DEFAULT_INTERVAL)
 		c.Interval = DEFAULT_INTERVAL
 	}
-	if c.OverloadDetectionTiming == "" {
+	if c.OverloadDrainIntervals == 0 {
+		c.OverloadDrainIntervals = DEFAULT_OVERLOAD_DRAIN_INTERVALS
 	}
 	switch c.OverloadDetectionTiming {
 	case MaxTimeoutExceeded:
@@ -180,6 +182,7 @@ type AdaptoRTOProvider struct {
 	interval       time.Duration // interval for computing failure rate.
 	// TODO: could consider other timings
 	overloadDetectionTiming OverloadDetectionTiming
+	overloadDrainIntervals  uint64
 }
 
 func NewAdaptoRTOProvider(config Config) *AdaptoRTOProvider {
@@ -210,12 +213,13 @@ func NewAdaptoRTOProvider(config Config) *AdaptoRTOProvider {
 		minSamplesRequired:     MIN_FAILED_SAMPLES / (config.SLOFailureRate * SLO_SAFETY_MARGIN),
 		sfrWeight:              float64(time.Minute / config.Interval), // 1 min / interval
 
-		rttCh:          make(chan RttSignal),
-		id:             config.Id,
-		min:            config.Min,
-		sloLatency:     config.SLOLatency,
-		sloFailureRate: config.SLOFailureRate,
-		interval:       config.Interval,
+		rttCh:                  make(chan RttSignal),
+		id:                     config.Id,
+		min:                    config.Min,
+		sloLatency:             config.SLOLatency,
+		sloFailureRate:         config.SLOFailureRate,
+		interval:               config.Interval,
+		overloadDrainIntervals: config.OverloadDrainIntervals,
 	}
 }
 
@@ -258,7 +262,7 @@ func (arp *AdaptoRTOProvider) ChokeTimeout() {
 	// compute rto with formula for first rtt observed.
 	// TODO: whether to use DEFAULT_K_MARGIN or the adjusted kMargin is up for debate.
 	// choke timeout will be called when server is likely to have built queues
-	// timoeut is choked for OVERLOAD_DRAIN_INTERVALS intervals and then starts adjusting in overload
+	// timoeut is choked for overloadDrainIntervals intervals and then starts adjusting in overload
 	/* rto := arp.minRtt + time.Duration(arp.kMargin*rttvar) // because rtt = srtt / 8 */
 	rto := arp.minRtt + time.Duration(DEFAULT_K_MARGIN*rttvar) // because rtt = srtt / 8
 	arp.timeout = min(max(rto, arp.min), arp.sloLatency)
@@ -297,7 +301,7 @@ func (arp *AdaptoRTOProvider) onRtt(signal RttSignal) {
 		if arp.timeout > arp.sloLatency-arp.sendRateInterval {
 			// rechoke and drain
 			arp.ChokeTimeout()
-			arp.overloadDrainIntervalsRemaining = OVERLOAD_DRAIN_INTERVALS
+			arp.overloadDrainIntervalsRemaining = arp.overloadDrainIntervals
 			// enforce pacing rate
 			arp.overloadThresholdReq = max(arp.CurrentRes(), 1)
 			arp.sendRateInterval = arp.interval / time.Duration(arp.overloadThresholdReq)
@@ -328,7 +332,7 @@ func (arp *AdaptoRTOProvider) onOverload(rtt time.Duration) {
 	arp.state = OVERLOAD
 
 	// increment so that first interval check is not skipped even if dropped is 0
-	arp.overloadDrainIntervalsRemaining = OVERLOAD_DRAIN_INTERVALS
+	arp.overloadDrainIntervalsRemaining = arp.overloadDrainIntervals
 
 	// define threshold using the res count instead of req
 	// take max with 1 to ensure that at least 1 request is sent even during failure

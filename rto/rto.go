@@ -270,8 +270,8 @@ func (arp *AdaptoRTOProvider) ChokeTimeout() {
 	// TODO: whether to use DEFAULT_K_MARGIN or the adjusted kMargin is up for debate.
 	// choke timeout will be called when server is likely to have built queues
 	// timoeut is choked for overloadDrainIntervals intervals and then starts adjusting in overload
-	/* rto := arp.minRtt + time.Duration(arp.kMargin*rttvar) // because rtt = srtt / 8 */
-	rto := arp.minRtt + time.Duration(DEFAULT_K_MARGIN*rttvar) // because rtt = srtt / 8
+	rto := arp.minRtt + time.Duration(arp.kMargin*rttvar) // because rtt = srtt / 8
+	/* rto := arp.minRtt + time.Duration(DEFAULT_K_MARGIN*rttvar) // because rtt = srtt / 8 */
 	arp.timeout = min(max(rto, arp.min), arp.sloLatency)
 }
 

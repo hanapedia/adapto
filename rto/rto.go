@@ -316,7 +316,7 @@ func (arp *AdaptoRTOProvider) onRtt(signal RttSignal) {
 			arp.ChokeTimeout()
 			arp.overloadDrainIntervalsRemaining = arp.overloadDrainIntervals
 			// enforce pacing rate
-			arp.overloadThresholdReq = max(arp.CurrentRes(), 1)
+			arp.overloadThresholdReq = max(arp.CurrentRes(), 2)
 			arp.sendRateInterval = arp.interval / time.Duration(arp.overloadThresholdReq)
 			arp.logger.Info("rto maxed out",
 				"id", arp.id,
@@ -456,7 +456,7 @@ func (arp *AdaptoRTOProvider) onInterval() {
 	if arp.overloadDrainIntervalsRemaining > 0 {
 		arp.overloadDrainIntervalsRemaining--
 		if arp.overloadDrainIntervalsRemaining == 0 {
-			arp.overloadThresholdReq = max(arp.CurrentRes(), 1)
+			arp.overloadThresholdReq = max(arp.succeeded(), 2)
 			arp.sendRateInterval = arp.interval / time.Duration(arp.overloadThresholdReq)
 			arp.logger.Info("overload draining intervals complete, enforcing pacing",
 				"id", arp.id,
@@ -472,7 +472,7 @@ func (arp *AdaptoRTOProvider) onInterval() {
 		// stil in overload
 		if fr >= arp.sloFailureRateAdjusted {
 			// shrink pacing to res
-			arp.overloadThresholdReq = max(arp.succeeded(), 1) // make sure to max with 1
+			arp.overloadThresholdReq = max(arp.succeeded(), 2) // make sure to max with 2, not 1
 			arp.sendRateInterval = arp.interval / time.Duration(
 				arp.overloadThresholdReq,
 			)
@@ -488,7 +488,7 @@ func (arp *AdaptoRTOProvider) onInterval() {
 		}
 		// gain pacing by x1.125 x 2^consecutivePacingGains
 		// this helps faster recovery of pacing from circuit broken state
-		arp.overloadThresholdReq += max(arp.overloadThresholdReq>>LOG2_PACING_GAIN, 1) << arp.consecutivePacingGains
+		arp.overloadThresholdReq += max(max(arp.overloadThresholdReq>>LOG2_PACING_GAIN, 1)<<arp.consecutivePacingGains, 2)
 		arp.sendRateInterval = arp.interval / time.Duration(
 			arp.overloadThresholdReq,
 		)

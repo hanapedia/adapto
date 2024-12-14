@@ -78,15 +78,18 @@ func (c ConfigValidationError) Error() string {
 	return fmt.Sprintf("config validation error: msg=%s", c.msg)
 }
 
+func DefaultOnIntervalHandler(*AdaptoRTOProvider) {}
+
 type Config struct {
 	Id                      string
-	SLOLatency              time.Duration           // max timeout value allowed
-	Min                     time.Duration           // min timeout value allowed
-	SLOFailureRate          float64                 // target failure rate SLO
-	Interval                time.Duration           // interval for failure rate calculations
-	KMargin                 int64                   // starting kMargin for with SLO and static kMargin for without SLO
-	OverloadDetectionTiming OverloadDetectionTiming // timing when to check for overload
-	OverloadDrainIntervals  uint64                  // number of intervals to drain overloading requests
+	SLOLatency              time.Duration            // max timeout value allowed
+	Min                     time.Duration            // min timeout value allowed
+	SLOFailureRate          float64                  // target failure rate SLO
+	Interval                time.Duration            // interval for failure rate calculations
+	KMargin                 int64                    // starting kMargin for with SLO and static kMargin for without SLO
+	OverloadDetectionTiming OverloadDetectionTiming  // timing when to check for overload
+	OverloadDrainIntervals  uint64                   // number of intervals to drain overloading requests
+	OnIntervalHandler       func(*AdaptoRTOProvider) // handler to be called at the end of every interval
 
 	Logger logger.Logger // optional logger
 }
@@ -127,6 +130,9 @@ func (c *Config) Validate() *ConfigValidationError {
 			"timing", DEFAULT_OVERLOAD_DETECTION_TIMING,
 		)
 		c.OverloadDetectionTiming = DEFAULT_OVERLOAD_DETECTION_TIMING
+	}
+	if c.OnIntervalHandler == nil {
+		c.OnIntervalHandler = DefaultOnIntervalHandler
 	}
 	return nil
 }
@@ -189,6 +195,9 @@ type AdaptoRTOProvider struct {
 	// TODO: could consider other timings
 	overloadDetectionTiming OverloadDetectionTiming
 	overloadDrainIntervals  uint64
+	// handler function to be called at the end of every interval
+	// WARNING: this is called after the counter has been reset
+	onIntervalHandler func(*AdaptoRTOProvider)
 }
 
 func NewAdaptoRTOProvider(config Config) *AdaptoRTOProvider {
@@ -226,6 +235,7 @@ func NewAdaptoRTOProvider(config Config) *AdaptoRTOProvider {
 		sloFailureRate:         config.SLOFailureRate,
 		interval:               config.Interval,
 		overloadDrainIntervals: config.OverloadDrainIntervals,
+		onIntervalHandler:      config.OnIntervalHandler,
 	}
 }
 
@@ -388,6 +398,7 @@ func (arp *AdaptoRTOProvider) onInterval() {
 	// record next interval start
 	defer func() {
 		arp.intervalStart = time.Now()
+		arp.onIntervalHandler(arp)
 	}()
 
 	// account for the carry. use the previous failure rate to ESTIMATE the failed from for the carry

@@ -172,7 +172,8 @@ type AdaptoRTOProvider struct {
 	sendRateInterval                time.Duration           // pacing interval for controlling sending rate at overloadThresholdReq / interval
 	overloadDrainIntervalsRemaining uint64                  // counter for the number of drain intervals remaining
 	consecutivePacingGains          uint64                  // counter for the number of consecutive pacing gains
-	prevSuccRess                    *ring.RingBuffer[int64] // ring buffer for recording previous numPrevNormalRess ress samples
+	prevSuccRess                    *ring.RingBuffer[int64] // ring buffer for recording previous successful res samples
+	prevReqs                        *ring.RingBuffer[int64] // ring buffer for recording previous reqs samples
 
 	// mutex for synchronizing access to timeout calculation fields
 	mu sync.Mutex
@@ -221,6 +222,7 @@ func NewAdaptoRTOProvider(config Config) *AdaptoRTOProvider {
 		intervalStart: time.Now(),
 		// ring buffer with default size of 2 + ceil(max / inteval)
 		prevSuccRess: ring.NewRingBuffer[int64](2 + int(math.Ceil(float64(config.SLOLatency)/float64(config.Interval)))),
+		prevReqs:     ring.NewRingBuffer[int64](2 + int(math.Ceil(float64(config.SLOLatency)/float64(config.Interval)))),
 
 		overloadDetectionTiming: config.OverloadDetectionTiming,
 
@@ -250,7 +252,7 @@ func (arp *AdaptoRTOProvider) resetCounters() {
 	arp.dropped = 0
 }
 
-// OverloadRes computes the estimate of instantaneous goodput per interval.
+// CurrentRes computes the estimate of instantaneous goodput per interval.
 // the reference time for the sliding window is the moment this method is called.
 func (arp *AdaptoRTOProvider) CurrentRes() int64 {
 	lastSuccRes := arp.prevSuccRess.GetLast()
@@ -264,6 +266,22 @@ func (arp *AdaptoRTOProvider) CurrentRes() int64 {
 		"durationRatio", float64(time.Since(arp.intervalStart))/float64(arp.interval),
 	)
 	return int64(math.Round(previousResEstimate)) + arp.succeeded()
+}
+
+// CurrentReq computes the estimate of instantaneous offered throughput per interval.
+// the reference time for the sliding window is the moment this method is called.
+func (arp *AdaptoRTOProvider) CurrentReq() int64 {
+	lastReq := arp.prevReqs.GetLast()
+	previousResEstimate := float64(lastReq) * float64(arp.interval-time.Since(arp.intervalStart)) / float64(arp.interval)
+	arp.logger.Debug("current rate computed",
+		"id", arp.id,
+		"res", arp.res,
+		"lastSuccRes", lastReq,
+		"previousResEstimate", previousResEstimate,
+		"sinceIntervalStart", time.Since(arp.intervalStart),
+		"durationRatio", float64(time.Since(arp.intervalStart))/float64(arp.interval),
+	)
+	return int64(math.Round(previousResEstimate)) + arp.req
 }
 
 // CapacityEstimate returns current overload estimate
@@ -324,16 +342,18 @@ func (arp *AdaptoRTOProvider) onRtt(signal RttSignal) {
 		// until then, update only srtt and rttvar with choked timeout
 		arp.ComputeNewRTO(signal.Duration, arp.overloadDrainIntervalsRemaining == 0)
 		// check that the timeout leaves enough room to fit at least 1 req
-		// if not, it is likely to be sending too fast,
-		// so rechoke timeout and reset overloadDrainIntervalsRemaining to stabilize sending rate
+		// if not, it is likely to be sending too fast, either because
+		// 1. capacity estimate was recently increased
+		// 2. capacity of the destination decreased due to other clients
 		if arp.timeout > arp.sloLatency-arp.sendRateInterval {
+
 			// rechoke and drain
 			arp.ChokeTimeout()
 			arp.overloadDrainIntervalsRemaining = arp.overloadDrainIntervals
 			// enforce pacing rate
-			arp.overloadThresholdReq = max(arp.CurrentRes(), 2)
-			arp.sendRateInterval = arp.interval / time.Duration(arp.overloadThresholdReq)
-			arp.logger.Info("rto maxed out",
+			/* arp.overloadThresholdReq = max(arp.CurrentRes(), 2) */
+			/* arp.sendRateInterval = arp.interval / time.Duration(arp.overloadThresholdReq) */
+			arp.logger.Info("rto maxed out, draining",
 				"id", arp.id,
 				"rto", arp.timeout.String(),
 				"rtt", signal.Duration.String(),
@@ -369,15 +389,15 @@ func (arp *AdaptoRTOProvider) onOverload(rtt time.Duration) {
 	// define threshold using the res count instead of req
 	// take max with 1 to ensure that at least 1 request is sent even during failure
 	// TODO: move the initial computation of sending rate interval to when drain interval is over
-	/* arp.overloadThresholdReq = max(arp.CurrentRes(), 1) */
-	/* arp.sendRateInterval = arp.interval / time.Duration(arp.overloadThresholdReq) */
+	arp.overloadThresholdReq = max(arp.CurrentReq(), 2)
+	arp.sendRateInterval = arp.interval / time.Duration(arp.overloadThresholdReq)
 	arp.logger.Info("overload detected",
 		"id", arp.id,
 		"triggerRTO", rtt,
 		"chokedRTO", arp.timeout,
 		"minRtt", arp.minRtt,
-		/* "overloadThresholdReq", arp.overloadThresholdReq, */
-		/* "sendRateInterval", arp.sendRateInterval, */
+		"initialOverloadThresholdReq", arp.overloadThresholdReq,
+		"initialSendRateInterval", arp.sendRateInterval,
 	)
 	return
 }
@@ -405,6 +425,8 @@ func (arp *AdaptoRTOProvider) onInterval() {
 		arp.intervalStart = time.Now()
 		arp.onIntervalHandler(arp)
 	}()
+	// record current res
+	arp.prevReqs.Add(arp.res)
 
 	// account for the carry. use the previous failure rate to ESTIMATE the failed from for the carry
 	resAdjusted := arp.res - arp.carry

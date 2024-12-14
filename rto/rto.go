@@ -266,6 +266,11 @@ func (arp *AdaptoRTOProvider) CurrentRes() int64 {
 	return int64(math.Round(previousResEstimate)) + arp.succeeded()
 }
 
+// CapacityEstimate returns current overload estimate
+func (arp *AdaptoRTOProvider) CapacityEstimate() int64 {
+	return arp.overloadThresholdReq
+}
+
 // ChokeTimeout handles timeout update when transitioning to overload
 // should lock rto updates
 func (arp *AdaptoRTOProvider) ChokeTimeout() {

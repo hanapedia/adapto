@@ -544,6 +544,9 @@ func (arp *AdaptoRTOProvider) onInterval() {
 	// undeclare overload
 	// no need to reset variables as they are all reset at the beginning of interval
 	arp.state = NORMAL
+	// reset threshold and send rate interval
+	arp.overloadThresholdReq = 0
+	arp.sendRateInterval = 0
 	arp.logger.Info("overload resolved",
 		"id", arp.id,
 		"overloadThresholdReq", arp.overloadThresholdReq,

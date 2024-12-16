@@ -31,7 +31,7 @@ const (
 	MIN_FAILED_SAMPLES               float64 = 1   // minimum failed samples reqruired to compute failure rate
 	LOG2_PACING_GAIN                 int64   = 5   // used as pacing gain factor. 1+ 1 >> LOG2_PACING_GAIN
 	DEFAULT_OVERLOAD_DRAIN_INTERVALS uint64  = 2   // intervals to choke rto after overload. TODO: reduce this
-	DEFAULT_STARTUP_INTERVALS        uint64  = 2   // intervals to choke rto after overload. TODO: reduce this
+	DEFAULT_STARTUP_INTERVALS        uint64  = 4   // intervals to wait for the kMargin to stabilize
 )
 
 // RttSignal is used for reporting rtt.

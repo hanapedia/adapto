@@ -161,7 +161,8 @@ type AdaptoRTOProvider struct {
 	// these counters are cleared per interval
 	req           int64     // number of requests sent
 	res           int64     // number of responses received
-	failed        int64     // number of requests failed
+	failed        int64     // number of requests failed. Only timeout failure are counted
+	genericErr    int64     // number of generic errs. these should not count towards internal failure rate
 	carry         int64     // carry over from previous interval
 	dropped       int64     // number of request dropped due to sending rate control
 	intervalStart time.Time // timestamp of the beginning of the current interval
@@ -249,6 +250,7 @@ func (arp *AdaptoRTOProvider) resetCounters() {
 	arp.req = 0
 	arp.res = 0
 	arp.failed = 0
+	arp.genericErr = 0
 	arp.dropped = 0
 }
 
@@ -317,7 +319,7 @@ func (arp *AdaptoRTOProvider) onRtt(signal RttSignal) {
 	arp.res++ // increment res counter
 	if signal.Type == GenericError {
 		// increment failed counter and return
-		arp.failed++
+		arp.genericErr++
 		arp.logger.Debug("Generic Error",
 			"id", arp.id,
 			"rto", signal.Duration,
@@ -565,7 +567,7 @@ func (arp *AdaptoRTOProvider) inflight() int64 {
 // succeeded calculates the successful responses
 // MUST be called in thread safe manner as it does not lock mu
 func (arp *AdaptoRTOProvider) succeeded() int64 {
-	return arp.res - arp.failed
+	return arp.res - arp.failed - arp.genericErr
 }
 
 var AdaptoRTOProviders map[string]*AdaptoRTOProvider

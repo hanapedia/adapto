@@ -31,6 +31,7 @@ const (
 	MIN_FAILED_SAMPLES               float64 = 1   // minimum failed samples reqruired to compute failure rate
 	LOG2_PACING_GAIN                 int64   = 5   // used as pacing gain factor. 1+ 1 >> LOG2_PACING_GAIN
 	DEFAULT_OVERLOAD_DRAIN_INTERVALS uint64  = 2   // intervals to choke rto after overload. TODO: reduce this
+	DEFAULT_STARTUP_INTERVALS        uint64  = 2   // intervals to choke rto after overload. TODO: reduce this
 )
 
 // RttSignal is used for reporting rtt.
@@ -167,6 +168,9 @@ type AdaptoRTOProvider struct {
 	dropped       int64     // number of request dropped due to sending rate control
 	intervalStart time.Time // timestamp of the beginning of the current interval
 
+	// states for startup
+	startupIntervalsRemaining uint64 // counter for the number of startup intervals remaining, decremented when failrue rate meets the target.
+
 	// states for overload control
 	overloadThresholdReq            int64                   // number of requests allowed in an interval during overload
 	queueLength                     int64                   // number of requests SCHEDULED & suspended, waiting for their turn
@@ -219,6 +223,8 @@ func NewAdaptoRTOProvider(config Config) *AdaptoRTOProvider {
 		kMargin: kMargin,
 
 		minRtt: config.SLOLatency,
+
+		startupIntervalsRemaining: DEFAULT_STARTUP_INTERVALS,
 
 		intervalStart: time.Now(),
 		// ring buffer with default size of 2 + ceil(max / inteval)
@@ -302,10 +308,6 @@ func (arp *AdaptoRTOProvider) ChokeTimeout() {
 	rttvar := (int64(arp.minRtt) >> 1) * BETA_SCALING
 
 	// compute rto with formula for first rtt observed.
-	// TODO: whether to use DEFAULT_K_MARGIN or the adjusted kMargin is up for debate.
-	// choke timeout will be called when server is likely to have built queues
-	// timoeut is choked for overloadDrainIntervals intervals and then starts adjusting in overload
-	/* rto := arp.minRtt + time.Duration(arp.kMargin*rttvar) // because rtt = srtt / 8 */
 	rto := arp.minRtt + time.Duration(DEFAULT_K_MARGIN*rttvar) // because rtt = srtt / 8
 	arp.timeout = min(max(rto, arp.min), arp.sloLatency)
 }
@@ -328,6 +330,12 @@ func (arp *AdaptoRTOProvider) onRtt(signal RttSignal) {
 	}
 	if signal.Type == Successful {
 		arp.minRtt = min(signal.Duration, arp.minRtt) // update minimum rtt
+		// startup intervals, where timeout, srtt, and rttvar are updated,
+		// but sloLatency is used to minimize the ACTUAL failure rate.
+		// the internal failure rate tracked by arp.failed should be updated using the updated timeout value
+		if arp.startupIntervalsRemaining > 0 && arp.timeout < signal.Duration {
+			arp.failed++
+		}
 	}
 	if signal.Type == TimeoutError {
 		// increment failed counter
@@ -487,6 +495,12 @@ func (arp *AdaptoRTOProvider) onInterval() {
 					"kMargin", arp.kMargin,
 				)
 			}
+			// startup intervals, where timeout, srtt, and rttvar are updated,
+			// but sloLatency is used to minimize the ACTUAL failure rate.
+			// the internal failure rate tracked by arp.failed should be updated using the updated timeout value
+			if arp.startupIntervalsRemaining > 0 {
+				arp.startupIntervalsRemaining--
+			}
 		}
 		return
 	}
@@ -609,9 +623,6 @@ func (arp *AdaptoRTOProvider) NewTimeout(ctx context.Context) (timeout time.Dura
 	// nextSchedulable = schedule interval * requests already in line + time.Now()
 	// suspend = arp.schedulingInterval * arp.queueLength
 	if arp.state == OVERLOAD {
-		// TODO: consider waiting for the draining intervals before applying pacing
-		// it could improve the accuracy of the initial capacity estimation
-		// it could also prevent overly cautious control at relatively milder overload
 		if arp.overloadDrainIntervalsRemaining > 0 {
 			return arp.timeout, rttCh, nil
 		}
@@ -653,6 +664,12 @@ func (arp *AdaptoRTOProvider) NewTimeout(ctx context.Context) (timeout time.Dura
 
 	}
 
+	// startup intervals, where timeout, srtt, and rttvar are updated,
+	// but sloLatency is used to minimize the ACTUAL failure rate.
+	// the internal failure rate tracked by arp.failed should be updated using the updated timeout value
+	if arp.startupIntervalsRemaining > 0 {
+		return arp.sloLatency, arp.rttCh, nil
+	}
 	return arp.timeout, arp.rttCh, nil
 }
 

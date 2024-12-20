@@ -817,7 +817,9 @@ func (arp *AdaptoRTOProvider) OnInterval() {
 		arp.overloadDrainIntervalsRemaining--
 		if arp.overloadDrainIntervalsRemaining == 0 {
 			arp.transitionToOverload()
+
 		}
+		defer arp.resetCounters() // reset counters each interval
 		return
 	case OVERLOAD:
 		if arp.hasEnoughSamples() {

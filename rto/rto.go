@@ -485,10 +485,10 @@ func (arp *AdaptoRTOProvider) updateCapacityEstimate(fr float64) {
 	// TODO:FAILURE: this is updated too frequently
 	if fr >= arp.sloFailureRateAdjusted {
 		// shrink pacing to res
-		arp.overloadThresholdReq = max(arp.succeeded(), 2) // make sure to max with 2, not 1
-		arp.sendRateInterval = arp.interval / time.Duration(
-			arp.overloadThresholdReq,
-		)
+		/* arp.overloadThresholdReq = max(arp.succeeded(), 2) // make sure to max with 2, not 1 */
+		/* arp.sendRateInterval = arp.interval / time.Duration( */
+		/* 	arp.overloadThresholdReq, */
+		/* ) */
 		// TODO:FAILURE: boundary check sendRateInterval
 		arp.consecutivePacingGains = 0 // reset consecutive gains
 		arp.logger.Info("still in overload, shrinking pacing",

@@ -851,7 +851,7 @@ func (arp *AdaptoRTOProvider) OnInterval() {
 		if fr >= arp.sloFailureRateAdjusted {
 			arp.timeout = arp.doubleTimeout(fr, max(arp.timeout, timeout))
 		} else {
-			arp.timeout = timeout
+			arp.timeout = max(arp.timeout, timeout)
 		}
 		if arp.timeout == arp.sloLatency {
 			arp.transitionToDrain()

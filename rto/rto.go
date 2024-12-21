@@ -105,11 +105,11 @@ func (c ConfigValidationError) Error() string {
 func DefaultOnIntervalHandler(*AdaptoRTOProvider) {}
 
 type Config struct {
-	Id             string
-	SLOLatency     time.Duration // max timeout value allowed
-	Min            time.Duration // min timeout value allowed
-	SLOFailureRate float64       // target failure rate SLO
-	Interval       time.Duration // interval for failure rate calculations
+	Id                      string
+	SLOLatency              time.Duration            // max timeout value allowed
+	Min                     time.Duration            // min timeout value allowed
+	SLOFailureRate          float64                  // target failure rate SLO
+	Interval                time.Duration            // interval for failure rate calculations
 	KMargin                 int64                    // starting kMargin for with SLO and static kMargin for without SLO
 	OverloadDetectionTiming OverloadDetectionTiming  // timing when to check for overload
 	OverloadDrainIntervals  uint64                   // number of intervals to drain overloading requests
@@ -172,11 +172,11 @@ type AdaptoRTOProvider struct {
 	timeout time.Duration
 
 	// values used in timeout calculations and adjusted dynamically
-	srtt   int64 // smoothed rtt
-	rttvar int64 // variance of rtt
+	srtt    int64   // smoothed rtt
+	rttvar  int64   // variance of rtt
 	kMargin int64   // extra margin multiplied to the origin K=4
-	sfr    float64 // smoothed failure rate computed as moving average.
-	lastFr float64 // most recent failure rate. not smoothed
+	sfr     float64 // smoothed failure rate computed as moving average.
+	lastFr  float64 // most recent failure rate. not smoothed
 
 	// keep track of minimum RTT to fallback to
 	minRtt time.Duration
@@ -435,7 +435,8 @@ func (arp *AdaptoRTOProvider) chokeTimeout() {
 	rttvar := (int64(arp.minRtt) >> 1) * BETA_SCALING
 
 	// compute rto with formula for first rtt observed.
-	rto := arp.minRtt + time.Duration(DEFAULT_K_MARGIN*rttvar) // because rtt = srtt / 8
+	/* rto := arp.minRtt + time.Duration(DEFAULT_K_MARGIN*rttvar) // because rtt = srtt / 8 */
+	rto := arp.minRtt + time.Duration(arp.kMargin*rttvar) // because rtt = srtt / 8
 	arp.timeout = min(max(rto, arp.min), arp.sloLatency)
 }
 
@@ -860,9 +861,12 @@ func (arp *AdaptoRTOProvider) OnInterval() {
 		defer arp.resetCounters() // reset counters each interval
 		fr := arp.computeFailure()
 		timeout := arp.ComputeNewRTO(time.Duration(arp.srtt >> LOG2_ALPHA))
-		arp.timeout = arp.doubleTimeout(fr, timeout)
 		if timeout == arp.sloLatency {
 			// do not decrement intervals remaining until timeout is tabilized
+			return
+		}
+		if fr > arp.lastFr {
+			// make sure that the failure rate is decreasing by draining
 			return
 		}
 		arp.overloadDrainIntervalsRemaining--

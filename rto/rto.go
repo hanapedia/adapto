@@ -214,6 +214,7 @@ type AdaptoRTOProvider struct {
 	sloFailureRateAdjusted float64 // slo with safety margin. Depends on sloFailureRate.
 	minSamplesRequired     float64 // minimum samples required to compute failure rate. Depends on sloFailureRate.
 	sfrWeight              float64 // smoothing factor for computing long-term failure rate. Depends on interval.
+	term                   int64   // current number of terms in sfr intervals
 
 	// configuration fields
 	id             string
@@ -442,26 +443,26 @@ func (arp *AdaptoRTOProvider) chokeTimeout() {
 
 // MEMO: shouldn't kMargin consider the difference between srtt and slo latency?
 // kMargin should not be too big s.t. timeout <- srtt * kMargin * 4 * rttvar
-func (arp *AdaptoRTOProvider) updateKMargin(fr float64) {
+func (arp *AdaptoRTOProvider) updateKMarginShortTerm(fr float64) {
 	if fr >= arp.sloFailureRateAdjusted {
 		arp.kMargin++
-		arp.logger.Info("incrementing kMargin",
+		arp.logger.Info("incrementing kMargin (short-term)",
 			"id", arp.id,
 			"fr", fr,
 			"sloAdjusted", arp.sloFailureRateAdjusted,
 			"kMargin", arp.kMargin,
 		)
-	} else {
-		// if the smoothed fr is well over threshold, try decrementing kMargin
-		if arp.sfr < arp.sloFailureRateAdjusted {
-			arp.kMargin = max(arp.kMargin-1, 1)
-			arp.logger.Info("shrinking kMargin",
-				"id", arp.id,
-				"sfr", arp.sfr,
-				"sloAdjusted", arp.sloFailureRateAdjusted,
-				"kMargin", arp.kMargin,
-			)
-		}
+	}
+}
+func (arp *AdaptoRTOProvider) updateKMarginLongTerm() {
+	if arp.sfr >= arp.sloFailureRateAdjusted {
+		arp.kMargin++
+		arp.logger.Info("incrementing kMargin (long-term)",
+			"id", arp.id,
+			"sfr", arp.sfr,
+			"sloAdjusted", arp.sloFailureRateAdjusted,
+			"kMargin", arp.kMargin,
+		)
 	}
 }
 
@@ -817,7 +818,7 @@ func (arp *AdaptoRTOProvider) OnInterval() {
 		}
 		defer arp.resetCounters() // reset counters each interval
 		fr := arp.computeFailure()
-		arp.updateKMargin(fr)
+		arp.updateKMarginShortTerm(fr)
 		arp.timeout = arp.ComputeNewRTO(time.Duration(arp.srtt >> LOG2_ALPHA))
 		if arp.timeout == arp.sloLatency {
 			arp.transitionToDrain()
@@ -850,6 +851,14 @@ func (arp *AdaptoRTOProvider) OnInterval() {
 		if arp.timeout == arp.sloLatency {
 			arp.transitionToDrain()
 		}
+
+		// apply long-term update to kmargin to adjust from the initial value decided in STARTUP
+		arp.term++
+		if arp.term == int64(arp.sfrWeight) {
+			arp.updateKMarginLongTerm()
+			arp.term = 0
+		}
+
 		return
 	case DRAIN:
 		if arp.hasEnoughSamples() {

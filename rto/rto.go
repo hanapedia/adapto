@@ -722,30 +722,30 @@ func (arp *AdaptoRTOProvider) OnRtt(signal RttSignal) {
 		arp.ComputeNewRTO(signal.Duration, false)
 		return
 	case OVERLOAD:
-		arp.ComputeNewRTO(signal.Duration, true)
+		arp.ComputeNewRTO(signal.Duration, false)
 		// check that the timeout leaves enough room to fit at least 1 req
 		// if not, it is likely to be sending too fast, either because
 		// 1. capacity estimate was recently increased
 		// 2. capacity of the destination decreased due to other clients
-		if arp.timeout > arp.sloLatency-arp.sendRateInterval {
-			// rechoke and drain
-			arp.transitionToDrain()
-		}
+		/* if arp.timeout > arp.sloLatency-arp.sendRateInterval { */
+		/* 	// rechoke and drain */
+		/* 	arp.transitionToDrain() */
+		/* } */
 		return
 	case CRUISE, STARTUP:
 		// Declare overload if max timeout is breached
-		if arp.overloadDetectionTiming == MaxTimeoutExceeded && signal.Duration == arp.sloLatency {
-			arp.transitionToDrain()
-			return
-		}
+		/* if arp.overloadDetectionTiming == MaxTimeoutExceeded && signal.Duration == arp.sloLatency { */
+		/* 	arp.transitionToDrain() */
+		/* 	return */
+		/* } */
 
 		// compute new timeout with rtt
-		arp.ComputeNewRTO(signal.Duration, true)
+		arp.ComputeNewRTO(signal.Duration, false)
 
 		// Declare overload if max timeout is generated
-		if arp.overloadDetectionTiming == MaxTimeoutGenerated && arp.timeout == arp.sloLatency {
-			arp.transitionToDrain()
-		}
+		/* if arp.overloadDetectionTiming == MaxTimeoutGenerated && arp.timeout == arp.sloLatency { */
+		/* 	arp.transitionToDrain() */
+		/* } */
 	}
 }
 
@@ -812,6 +812,10 @@ func (arp *AdaptoRTOProvider) OnInterval() {
 		defer arp.resetCounters() // reset counters each interval
 		fr := arp.computeFailure()
 		arp.updateKMargin(fr)
+		arp.ComputeNewRTO(time.Duration(arp.srtt >> LOG2_ALPHA), true)
+		if arp.timeout == arp.sloLatency {
+			arp.transitionToDrain()
+		}
 		return
 	case DRAIN:
 		arp.overloadDrainIntervalsRemaining--
@@ -840,6 +844,10 @@ func (arp *AdaptoRTOProvider) OnInterval() {
 		}
 		fr := arp.computeFailure()
 		arp.updateCapacityEstimate(fr)
+		arp.ComputeNewRTO(time.Duration(arp.srtt >> LOG2_ALPHA), true)
+		if arp.timeout == arp.sloLatency {
+			arp.transitionToDrain()
+		}
 		return
 	case FAILURE:
 		return

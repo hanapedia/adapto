@@ -31,7 +31,7 @@ const (
 	SLO_SAFETY_MARGIN                float64 = 0.5 // safety margin of 0.5 or division by 2
 	MIN_FAILED_SAMPLES               float64 = 1   // minimum failed samples reqruired to compute failure rate
 	LOG2_PACING_GAIN                 int64   = 5   // used as pacing gain factor. 1+ 1 >> LOG2_PACING_GAIN
-	DEFAULT_OVERLOAD_DRAIN_INTERVALS uint64  = 2   // intervals to choke rto after overload. TODO: reduce this
+	DEFAULT_OVERLOAD_DRAIN_INTERVALS uint64  = 2   // intervals to choke rto after overload.
 	DEFAULT_STARTUP_INTERVALS        uint64  = 4   // intervals to wait for the kMargin to stabilize
 )
 
@@ -214,6 +214,7 @@ type AdaptoRTOProvider struct {
 	sloFailureRateAdjusted float64 // slo with safety margin. Depends on sloFailureRate.
 	minSamplesRequired     float64 // minimum samples required to compute failure rate. Depends on sloFailureRate.
 	sfrWeight              float64 // smoothing factor for computing long-term failure rate. Depends on interval.
+	term                   int64   // current number of terms in sfr intervals
 
 	// configuration fields
 	id             string
@@ -221,7 +222,7 @@ type AdaptoRTOProvider struct {
 	sloLatency     time.Duration
 	sloFailureRate float64       // slo failure rate
 	interval       time.Duration // interval for computing failure rate.
-	// TODO: could consider other timings
+	// TODO: could consider other timings -> will probably be limited to MaxTimeoutGenerated
 	overloadDetectionTiming OverloadDetectionTiming
 	overloadDrainIntervals  uint64
 	// handler function to be called at the end of every interval
@@ -311,10 +312,9 @@ func (arp *AdaptoRTOProvider) transitionToDrain() {
 
 		// define threshold using the res count instead of req
 		// take max with 1 to ensure that at least 1 request is sent even during failure
-		// TODO: move the initial computation of sending rate interval to when drain interval is over
 		arp.overloadThresholdReq = max(arp.currentReq(), 2)
 		arp.sendRateInterval = arp.interval / time.Duration(arp.overloadThresholdReq)
-		// TODO: boundary check sendRateInterval
+		// TODO:FAILURE boundary check sendRateInterval
 		arp.logger.Info(fmt.Sprintf("transitioning from %s to DRAIN", StateAsString(arp.state)),
 			"id", arp.id,
 			"chokedRTO", arp.timeout,
@@ -352,7 +352,7 @@ func (arp *AdaptoRTOProvider) transitionToOverload() {
 	if arp.state == DRAIN {
 		arp.overloadThresholdReq = max(arp.succeeded(), 2)
 		arp.sendRateInterval = arp.interval / time.Duration(arp.overloadThresholdReq)
-		// TODO: boundary check sendRateInterval
+		// TODO:FAILURE: boundary check sendRateInterval
 		arp.logger.Info(fmt.Sprintf("transitioning from %s to OVERLOAD", StateAsString(arp.state)),
 			"id", arp.id,
 			"overloadThresholdReq", arp.overloadThresholdReq,
@@ -370,7 +370,7 @@ func (arp *AdaptoRTOProvider) transitionToOverload() {
 // OVERLOAD -> CRUISE
 func (arp *AdaptoRTOProvider) transitionToFailure() {
 	if arp.state == OVERLOAD {
-		// TODO: impelment FAILURE STATE
+		// TODO:FAILURE: impelment FAILURE STATE
 		arp.logger.Info(fmt.Sprintf("transitioning from %s to FAILURE", StateAsString(arp.state)),
 			"id", arp.id,
 		)
@@ -436,43 +436,63 @@ func (arp *AdaptoRTOProvider) chokeTimeout() {
 	rttvar := (int64(arp.minRtt) >> 1) * BETA_SCALING
 
 	// compute rto with formula for first rtt observed.
-	rto := arp.minRtt + time.Duration(DEFAULT_K_MARGIN*rttvar) // because rtt = srtt / 8
+	/* rto := arp.minRtt + time.Duration(DEFAULT_K_MARGIN*rttvar) // because rtt = srtt / 8 */
+	rto := arp.minRtt + time.Duration(arp.kMargin*rttvar) // because rtt = srtt / 8
 	arp.timeout = min(max(rto, arp.min), arp.sloLatency)
 }
 
-func (arp *AdaptoRTOProvider) updateKMargin(fr float64) {
+// MEMO: shouldn't kMargin consider the difference between srtt and slo latency?
+// kMargin should not be too big s.t. timeout <- srtt * kMargin * 4 * rttvar
+func (arp *AdaptoRTOProvider) updateKMarginShortTerm(fr float64) {
 	if fr >= arp.sloFailureRateAdjusted {
 		arp.kMargin++
-		arp.logger.Info("incrementing kMargin",
+		arp.logger.Info("incrementing kMargin (short-term)",
 			"id", arp.id,
 			"fr", fr,
 			"sloAdjusted", arp.sloFailureRateAdjusted,
 			"kMargin", arp.kMargin,
 		)
-	} else {
-		// if the smoothed fr is well over threshold, try decrementing kMargin
-		if arp.sfr < arp.sloFailureRateAdjusted {
-			arp.kMargin--
-			arp.logger.Info("shrinking kMargin",
-				"id", arp.id,
-				"sfr", arp.sfr,
-				"sloAdjusted", arp.sloFailureRateAdjusted,
-				"kMargin", arp.kMargin,
-			)
-		}
 	}
+}
+func (arp *AdaptoRTOProvider) updateKMarginLongTerm() {
+	// use non-adjusted slo for long-term adjusments
+	if arp.sfr >= arp.sloFailureRate {
+		arp.kMargin++
+		arp.logger.Info("incrementing kMargin (long-term)",
+			"id", arp.id,
+			"sfr", arp.sfr,
+			"sloAdjusted", arp.sloFailureRateAdjusted,
+			"kMargin", arp.kMargin,
+		)
+	}
+}
+
+// instead of updating kmargin, directly double the timeout
+// this should be called after the new timeout for the interval is computed
+func (arp *AdaptoRTOProvider) doubleTimeout(fr float64, timeout time.Duration) time.Duration {
+	if fr >= arp.sloFailureRateAdjusted {
+		timeout *= 2
+		arp.logger.Info("doubling timeout",
+			"id", arp.id,
+			"fr", fr,
+			"sloAdjusted", arp.sloFailureRateAdjusted,
+			"timeout", timeout,
+		)
+	}
+	return min(timeout, arp.sloLatency)
 }
 
 func (arp *AdaptoRTOProvider) updateCapacityEstimate(fr float64) {
 	// stil in overload
-	// TODO: this is updated too frequently
+	// TODO:FAILURE: this is updated too frequently
 	if fr >= arp.sloFailureRateAdjusted {
 		// shrink pacing to res
-		arp.overloadThresholdReq = max(arp.succeeded(), 2) // make sure to max with 2, not 1
-		arp.sendRateInterval = arp.interval / time.Duration(
-			arp.overloadThresholdReq,
-		)
-		// TODO: boundary check sendRateInterval
+		/* arp.overloadThresholdReq = max(arp.succeeded(), 2) // make sure to max with 2, not 1 */
+		/* arp.sendRateInterval = arp.interval / time.Duration( */
+		/* 	arp.overloadThresholdReq, */
+		/* ) */
+		// TODO:FAILURE: boundary check sendRateInterval
+		// if dropped is high, should consider increasing pacing
 		arp.consecutivePacingGains = 0 // reset consecutive gains
 		arp.logger.Info("still in overload, shrinking pacing",
 			"id", arp.id,
@@ -489,7 +509,7 @@ func (arp *AdaptoRTOProvider) updateCapacityEstimate(fr float64) {
 	arp.sendRateInterval = arp.interval / time.Duration(
 		arp.overloadThresholdReq,
 	)
-	// TODO: boundary check sendRateInterval
+	// TODO:FAILURE: boundary check sendRateInterval
 	arp.consecutivePacingGains++
 	arp.logger.Info("still in overload, growing pacing",
 		"id", arp.id,
@@ -573,7 +593,7 @@ func (arp *AdaptoRTOProvider) NewTimeout(ctx context.Context) (timeout time.Dura
 		// nextSchedulable = schedule interval * requests already in line + time.Now()
 		// suspend = arp.schedulingInterval * arp.queueLength
 
-		// TODO: must check arp.sendRateInterval itself does not exceed the sloLatency
+		// TODO:FAILURE must check arp.sendRateInterval itself does not exceed the sloLatency
 		suspend := arp.sendRateInterval * time.Duration(arp.queueLength)
 		adjustedTimeout := arp.sloLatency - suspend
 		if adjustedTimeout < arp.timeout {
@@ -628,8 +648,9 @@ func (arp *AdaptoRTOProvider) NewTimeout(ctx context.Context) (timeout time.Dura
 }
 
 // ComputeNewRTO computes new rto based on new rtt
+// new timeout value is returned and can be used to set timeouts or overload detection
 // MUST be called in thread safe manner as it does not lock mu
-func (arp *AdaptoRTOProvider) ComputeNewRTO(rtt time.Duration, updateTimeout bool) {
+func (arp *AdaptoRTOProvider) ComputeNewRTO(rtt time.Duration) time.Duration {
 	// boundary check
 	if rtt < 0 {
 		rtt *= -1
@@ -639,29 +660,28 @@ func (arp *AdaptoRTOProvider) ComputeNewRTO(rtt time.Duration, updateTimeout boo
 		arp.srtt = int64(rtt) * ALPHA_SCALING                   // use the scaled srtt for Jacobson. R * 8 since alpha = 1/8
 		arp.rttvar = (int64(rtt) >> 1) * BETA_SCALING           // use the scaled rttvar for Jacobson. (R / 2) * 4 since beta = 1/4
 		rto := rtt + time.Duration(DEFAULT_K_MARGIN*arp.rttvar) // because rtt = srtt / 8
-		arp.timeout = min(max(rto, arp.min), arp.sloLatency)
+		timeout := min(max(rto, arp.min), arp.sloLatency)
 		arp.logger.Debug("new RTO computed",
 			"id", arp.id,
-			"rto", arp.timeout.String(),
+			"rto", timeout.String(),
 			"rtt", rtt.String(),
 		)
-		return
+		return timeout
 	}
 
 	rto, srtt, rttvar := jacobsonCalc(int64(rtt), arp.srtt, arp.rttvar, arp.kMargin)
+	/* rto, srtt, rttvar := jacobsonCalc(int64(rtt), arp.srtt, arp.rttvar, DEFAULT_K_MARGIN) */
 
 	// do not update these values when overload is detected
 	arp.srtt = srtt
 	arp.rttvar = rttvar
-	if !updateTimeout {
-		return
-	}
-	arp.timeout = min(max(time.Duration(rto), arp.min), arp.sloLatency)
+	timeout := min(max(time.Duration(rto), arp.min), arp.sloLatency)
 	arp.logger.Debug("new RTO computed",
 		"id", arp.id,
-		"rto", arp.timeout.String(),
+		"rto", timeout.String(),
 		"rtt", rtt.String(),
 	)
+	return timeout
 }
 
 // StartWithSLO starts the provider by spawning a goroutine that waits for new rtt or timeout event and updates the timeout value accordingly. timeout calculations are also adjusted to meet the SLO
@@ -717,35 +737,48 @@ func (arp *AdaptoRTOProvider) OnRtt(signal RttSignal) {
 		)
 	}
 	switch arp.state {
+	case STARTUP:
+		// update timeout during startup aggressively to find good kMargin fast
+		/* timeout := arp.ComputeNewRTO(signal.Duration) */
+		arp.ComputeNewRTO(signal.Duration)
+		// should drain if the destination is already overloaded
+		/* if timeout == arp.sloLatency { */
+		/* 	arp.transitionToDrain() */
+		/* } */
+		return
+	case CRUISE:
+		// Declare overload if max timeout is breached
+		/* if arp.overloadDetectionTiming == MaxTimeoutExceeded && signal.Duration == arp.sloLatency { */
+		/* 	arp.transitionToDrain() */
+		/* 	return */
+		/* } */
+
+		// compute new timeout with rtt
+		/* timeout := arp.ComputeNewRTO(signal.Duration) */
+		arp.ComputeNewRTO(signal.Duration)
+		/* if timeout == arp.sloLatency { */
+		/* 	arp.transitionToDrain() */
+		/* } */
+
+		// Declare overload if max timeout is generated
+		/* if arp.overloadDetectionTiming == MaxTimeoutGenerated && arp.timeout == arp.sloLatency { */
+		/* 	arp.transitionToDrain() */
+		/* } */
 	case DRAIN:
 		// update only srtt and rttvar with choked timeout
-		arp.ComputeNewRTO(signal.Duration, false)
+		arp.ComputeNewRTO(signal.Duration)
 		return
 	case OVERLOAD:
-		arp.ComputeNewRTO(signal.Duration, true)
+		arp.ComputeNewRTO(signal.Duration)
 		// check that the timeout leaves enough room to fit at least 1 req
 		// if not, it is likely to be sending too fast, either because
 		// 1. capacity estimate was recently increased
 		// 2. capacity of the destination decreased due to other clients
-		if arp.timeout > arp.sloLatency-arp.sendRateInterval {
-			// rechoke and drain
-			arp.transitionToDrain()
-		}
+		/* if arp.timeout > arp.sloLatency-arp.sendRateInterval { */
+		/* 	// rechoke and drain */
+		/* 	arp.transitionToDrain() */
+		/* } */
 		return
-	case CRUISE, STARTUP:
-		// Declare overload if max timeout is breached
-		if arp.overloadDetectionTiming == MaxTimeoutExceeded && signal.Duration == arp.sloLatency {
-			arp.transitionToDrain()
-			return
-		}
-
-		// compute new timeout with rtt
-		arp.ComputeNewRTO(signal.Duration, true)
-
-		// Declare overload if max timeout is generated
-		if arp.overloadDetectionTiming == MaxTimeoutGenerated && arp.timeout == arp.sloLatency {
-			arp.transitionToDrain()
-		}
 	}
 }
 
@@ -777,7 +810,7 @@ func (arp *AdaptoRTOProvider) OnInterval() {
 
 	switch arp.state {
 	case STARTUP:
-		arp.prevSuccRess.Add(arp.succeeded())
+		/* arp.prevSuccRess.Add(arp.succeeded()) */
 		if arp.hasEnoughSamples() {
 			arp.logger.Info("not enough samples",
 				"id", arp.id,
@@ -788,7 +821,11 @@ func (arp *AdaptoRTOProvider) OnInterval() {
 		}
 		defer arp.resetCounters() // reset counters each interval
 		fr := arp.computeFailure()
-		arp.updateKMargin(fr)
+		arp.updateKMarginShortTerm(fr)
+		arp.timeout = arp.ComputeNewRTO(time.Duration(arp.srtt >> LOG2_ALPHA))
+		if arp.timeout == arp.sloLatency {
+			arp.transitionToDrain()
+		}
 		if fr < arp.sloFailureRateAdjusted {
 			// startup intervals, where timeout, srtt, and rttvar are updated,
 			// but sloLatency is used to minimize the ACTUAL failure rate.
@@ -798,9 +835,10 @@ func (arp *AdaptoRTOProvider) OnInterval() {
 				arp.transitionToCruise()
 			}
 		}
+
 		return
 	case CRUISE:
-		arp.prevSuccRess.Add(arp.succeeded())
+		/* arp.prevSuccRess.Add(arp.succeeded()) */
 		if arp.hasEnoughSamples() {
 			arp.logger.Info("not enough samples",
 				"id", arp.id,
@@ -811,15 +849,51 @@ func (arp *AdaptoRTOProvider) OnInterval() {
 		}
 		defer arp.resetCounters() // reset counters each interval
 		fr := arp.computeFailure()
-		arp.updateKMargin(fr)
+		timeout := arp.ComputeNewRTO(time.Duration(arp.srtt >> LOG2_ALPHA))
+		// use which ever the bigger. the prvious timout or new timeout before try doubling
+		if fr >= arp.sloFailureRateAdjusted {
+			arp.timeout = arp.doubleTimeout(fr, max(arp.timeout, timeout))
+		} else {
+			arp.timeout = max(arp.timeout, timeout)
+		}
+		if arp.timeout == arp.sloLatency {
+			arp.transitionToDrain()
+		}
+
+		// apply long-term update to kmargin to adjust from the initial value decided in STARTUP
+		arp.term++
+		if arp.term == int64(arp.sfrWeight) {
+			arp.updateKMarginLongTerm()
+			arp.term = 0
+		}
+
 		return
 	case DRAIN:
+		if arp.hasEnoughSamples() {
+			arp.logger.Info("not enough samples",
+				"id", arp.id,
+				"resAdjusted", arp.res-arp.carry,
+				"minSamplesRequired", arp.minSamplesRequired,
+			)
+			return
+		}
+		defer arp.resetCounters() // reset counters each interval
+		fr := arp.computeFailure()
+
+		current := arp.ComputeNewRTO(time.Duration(arp.srtt >> LOG2_ALPHA))
+		// drain until srtt and rtt var has dropped so that produced timeout is (sloLatency - chokedTimeout) / 8 over chokedTimeout
+		if current > (arp.sloLatency-arp.timeout)>>time.Duration(LOG2_ALPHA)+arp.timeout {
+			// do not decrement intervals remaining until timeout is tabilized
+			return
+		}
+		if fr < arp.lastFr {
+			// make sure that the failure rate is decreasing by draining
+			return
+		}
 		arp.overloadDrainIntervalsRemaining--
 		if arp.overloadDrainIntervalsRemaining == 0 {
 			arp.transitionToOverload()
-
 		}
-		defer arp.resetCounters() // reset counters each interval
 		return
 	case OVERLOAD:
 		if arp.hasEnoughSamples() {
@@ -839,7 +913,17 @@ func (arp *AdaptoRTOProvider) OnInterval() {
 			return
 		}
 		fr := arp.computeFailure()
-		arp.updateCapacityEstimate(fr)
+		// should update sending rate if drop ratio is too high and there is room in failure rate
+		// if failure rate is too high, adjust timeout.
+		arp.timeout = arp.ComputeNewRTO(time.Duration(arp.srtt >> LOG2_ALPHA))
+		if fr > arp.sloFailureRateAdjusted {
+			arp.timeout = arp.doubleTimeout(fr, arp.timeout)
+			if arp.timeout == arp.sloLatency {
+				arp.transitionToDrain()
+			}
+		} else {
+			arp.updateCapacityEstimate(fr)
+		}
 		return
 	case FAILURE:
 		return

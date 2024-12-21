@@ -717,23 +717,8 @@ func (arp *AdaptoRTOProvider) OnRtt(signal RttSignal) {
 	}
 	switch arp.state {
 	case STARTUP:
-		// update only srtt and rttvar with choked timeout
-		arp.ComputeNewRTO(signal.Duration)
-		return
-	case DRAIN:
-		// update only srtt and rttvar with choked timeout
-		arp.ComputeNewRTO(signal.Duration)
-		return
-	case OVERLOAD:
-		arp.ComputeNewRTO(signal.Duration)
-		// check that the timeout leaves enough room to fit at least 1 req
-		// if not, it is likely to be sending too fast, either because
-		// 1. capacity estimate was recently increased
-		// 2. capacity of the destination decreased due to other clients
-		/* if arp.timeout > arp.sloLatency-arp.sendRateInterval { */
-		/* 	// rechoke and drain */
-		/* 	arp.transitionToDrain() */
-		/* } */
+		// update timeout during startup aggressively to find good kMargin fast
+		arp.timeout = arp.ComputeNewRTO(signal.Duration)
 		return
 	case CRUISE:
 		// Declare overload if max timeout is breached
@@ -752,6 +737,21 @@ func (arp *AdaptoRTOProvider) OnRtt(signal RttSignal) {
 		/* if arp.overloadDetectionTiming == MaxTimeoutGenerated && arp.timeout == arp.sloLatency { */
 		/* 	arp.transitionToDrain() */
 		/* } */
+	case DRAIN:
+		// update only srtt and rttvar with choked timeout
+		arp.ComputeNewRTO(signal.Duration)
+		return
+	case OVERLOAD:
+		arp.ComputeNewRTO(signal.Duration)
+		// check that the timeout leaves enough room to fit at least 1 req
+		// if not, it is likely to be sending too fast, either because
+		// 1. capacity estimate was recently increased
+		// 2. capacity of the destination decreased due to other clients
+		/* if arp.timeout > arp.sloLatency-arp.sendRateInterval { */
+		/* 	// rechoke and drain */
+		/* 	arp.transitionToDrain() */
+		/* } */
+		return
 	}
 }
 

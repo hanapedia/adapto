@@ -490,6 +490,7 @@ func (arp *AdaptoRTOProvider) updateCapacityEstimate(fr float64) {
 		/* 	arp.overloadThresholdReq, */
 		/* ) */
 		// TODO:FAILURE: boundary check sendRateInterval
+		// if dropped is high, should consider increasing pacing
 		arp.consecutivePacingGains = 0 // reset consecutive gains
 		arp.logger.Info("still in overload, shrinking pacing",
 			"id", arp.id,
@@ -893,10 +894,16 @@ func (arp *AdaptoRTOProvider) OnInterval() {
 			return
 		}
 		fr := arp.computeFailure()
-		arp.updateCapacityEstimate(fr)
+		// should update sending rate if drop ratio is too high and there is room in failure rate
+		// if failure rate is too high, adjust timeout.
 		arp.timeout = arp.ComputeNewRTO(time.Duration(arp.srtt >> LOG2_ALPHA))
-		if arp.timeout == arp.sloLatency {
-			arp.transitionToDrain()
+		if fr > arp.sloFailureRateAdjusted {
+			arp.timeout = arp.doubleTimeout(fr, arp.timeout)
+			if arp.timeout == arp.sloLatency {
+				arp.transitionToDrain()
+			}
+		} else {
+			arp.updateCapacityEstimate(fr)
 		}
 		return
 	case FAILURE:

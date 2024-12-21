@@ -739,11 +739,12 @@ func (arp *AdaptoRTOProvider) OnRtt(signal RttSignal) {
 	switch arp.state {
 	case STARTUP:
 		// update timeout during startup aggressively to find good kMargin fast
-		timeout := arp.ComputeNewRTO(signal.Duration)
+		/* timeout := arp.ComputeNewRTO(signal.Duration) */
+		arp.ComputeNewRTO(signal.Duration)
 		// should drain if the destination is already overloaded
-		if timeout == arp.sloLatency {
-			arp.transitionToDrain()
-		}
+		/* if timeout == arp.sloLatency { */
+		/* 	arp.transitionToDrain() */
+		/* } */
 		return
 	case CRUISE:
 		// Declare overload if max timeout is breached
@@ -753,10 +754,11 @@ func (arp *AdaptoRTOProvider) OnRtt(signal RttSignal) {
 		/* } */
 
 		// compute new timeout with rtt
-		timeout := arp.ComputeNewRTO(signal.Duration)
-		if timeout == arp.sloLatency {
-			arp.transitionToDrain()
-		}
+		/* timeout := arp.ComputeNewRTO(signal.Duration) */
+		arp.ComputeNewRTO(signal.Duration)
+		/* if timeout == arp.sloLatency { */
+		/* 	arp.transitionToDrain() */
+		/* } */
 
 		// Declare overload if max timeout is generated
 		/* if arp.overloadDetectionTiming == MaxTimeoutGenerated && arp.timeout == arp.sloLatency { */

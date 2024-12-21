@@ -468,14 +468,15 @@ func (arp *AdaptoRTOProvider) chokeTimeout() {
 // this should be called after the new timeout for the interval is computed
 func (arp *AdaptoRTOProvider) updateKMargin(fr float64, timeout time.Duration) time.Duration {
 	if fr >= arp.sloFailureRateAdjusted {
+		timeout *= 2
 		arp.logger.Info("doubling timeout",
 			"id", arp.id,
 			"fr", fr,
 			"sloAdjusted", arp.sloFailureRateAdjusted,
+			"timeout", timeout,
 		)
-		return timeout * 2
 	}
-	return timeout
+	return min(timeout, arp.sloLatency)
 }
 
 func (arp *AdaptoRTOProvider) updateCapacityEstimate(fr float64) {
@@ -827,7 +828,6 @@ func (arp *AdaptoRTOProvider) OnInterval() {
 				arp.transitionToCruise()
 			}
 		}
-
 
 		return
 	case CRUISE:

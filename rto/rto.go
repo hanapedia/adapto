@@ -879,8 +879,10 @@ func (arp *AdaptoRTOProvider) OnInterval() {
 		}
 		defer arp.resetCounters() // reset counters each interval
 		fr := arp.computeFailure()
-		timeout := arp.ComputeNewRTO(time.Duration(arp.srtt >> LOG2_ALPHA))
-		if timeout == arp.sloLatency {
+
+		current := arp.ComputeNewRTO(time.Duration(arp.srtt >> LOG2_ALPHA))
+		// drain until srtt and rtt var has dropped so that produced timeout is (sloLatency - chokedTimeout) / 8 over chokedTimeout
+		if current > (arp.sloLatency-arp.timeout)>>time.Duration(LOG2_ALPHA)+arp.timeout {
 			// do not decrement intervals remaining until timeout is tabilized
 			return
 		}

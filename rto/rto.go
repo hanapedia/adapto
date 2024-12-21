@@ -847,7 +847,12 @@ func (arp *AdaptoRTOProvider) OnInterval() {
 		defer arp.resetCounters() // reset counters each interval
 		fr := arp.computeFailure()
 		timeout := arp.ComputeNewRTO(time.Duration(arp.srtt >> LOG2_ALPHA))
-		arp.timeout = arp.doubleTimeout(fr, timeout)
+		// use which ever the bigger. the prvious timout or new timeout before try doubling
+		if fr >= arp.sloFailureRateAdjusted {
+			arp.timeout = arp.doubleTimeout(fr, max(arp.timeout, timeout))
+		} else {
+			arp.timeout = timeout
+		}
 		if arp.timeout == arp.sloLatency {
 			arp.transitionToDrain()
 		}

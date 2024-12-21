@@ -240,7 +240,7 @@ func NewAdaptoRTOProvider(config Config) *AdaptoRTOProvider {
 	/* } */
 	return &AdaptoRTOProvider{
 		logger:  l,
-		state:   CRUISE,
+		state:   STARTUP,
 		timeout: config.SLOLatency,
 
 		/* kMargin: kMargin, */
@@ -812,8 +812,12 @@ func (arp *AdaptoRTOProvider) OnInterval() {
 			)
 			return
 		}
-		defer arp.resetCounters() // reset counters each interval
 		fr := arp.computeFailure()
+		timeout := arp.ComputeNewRTO(time.Duration(arp.srtt >> LOG2_ALPHA))
+		arp.timeout = arp.updateKMargin(fr, timeout)
+		if arp.timeout == arp.sloLatency {
+			arp.transitionToDrain()
+		}
 		if fr < arp.sloFailureRateAdjusted {
 			// startup intervals, where timeout, srtt, and rttvar are updated,
 			// but sloLatency is used to minimize the ACTUAL failure rate.
@@ -822,9 +826,8 @@ func (arp *AdaptoRTOProvider) OnInterval() {
 			if arp.startupIntervalsRemaining == 0 {
 				arp.transitionToCruise()
 			}
-		} else {
-			arp.timeout = arp.updateKMargin(fr, arp.timeout)
 		}
+
 
 		return
 	case CRUISE:

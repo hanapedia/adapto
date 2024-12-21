@@ -31,7 +31,7 @@ const (
 	SLO_SAFETY_MARGIN                float64 = 0.5 // safety margin of 0.5 or division by 2
 	MIN_FAILED_SAMPLES               float64 = 1   // minimum failed samples reqruired to compute failure rate
 	LOG2_PACING_GAIN                 int64   = 5   // used as pacing gain factor. 1+ 1 >> LOG2_PACING_GAIN
-	DEFAULT_OVERLOAD_DRAIN_INTERVALS uint64  = 2   // intervals to choke rto after overload. TODO: reduce this
+	DEFAULT_OVERLOAD_DRAIN_INTERVALS uint64  = 2   // intervals to choke rto after overload.
 	DEFAULT_STARTUP_INTERVALS        uint64  = 4   // intervals to wait for the kMargin to stabilize
 )
 
@@ -221,7 +221,7 @@ type AdaptoRTOProvider struct {
 	sloLatency     time.Duration
 	sloFailureRate float64       // slo failure rate
 	interval       time.Duration // interval for computing failure rate.
-	// TODO: could consider other timings
+	// TODO: could consider other timings -> will probably be limited to MaxTimeoutGenerated
 	overloadDetectionTiming OverloadDetectionTiming
 	overloadDrainIntervals  uint64
 	// handler function to be called at the end of every interval
@@ -311,10 +311,9 @@ func (arp *AdaptoRTOProvider) transitionToDrain() {
 
 		// define threshold using the res count instead of req
 		// take max with 1 to ensure that at least 1 request is sent even during failure
-		// TODO: move the initial computation of sending rate interval to when drain interval is over
 		arp.overloadThresholdReq = max(arp.currentReq(), 2)
 		arp.sendRateInterval = arp.interval / time.Duration(arp.overloadThresholdReq)
-		// TODO: boundary check sendRateInterval
+		// TODO:FAILURE boundary check sendRateInterval
 		arp.logger.Info(fmt.Sprintf("transitioning from %s to DRAIN", StateAsString(arp.state)),
 			"id", arp.id,
 			"chokedRTO", arp.timeout,
@@ -352,7 +351,7 @@ func (arp *AdaptoRTOProvider) transitionToOverload() {
 	if arp.state == DRAIN {
 		arp.overloadThresholdReq = max(arp.succeeded(), 2)
 		arp.sendRateInterval = arp.interval / time.Duration(arp.overloadThresholdReq)
-		// TODO: boundary check sendRateInterval
+		// TODO:FAILURE: boundary check sendRateInterval
 		arp.logger.Info(fmt.Sprintf("transitioning from %s to OVERLOAD", StateAsString(arp.state)),
 			"id", arp.id,
 			"overloadThresholdReq", arp.overloadThresholdReq,
@@ -370,7 +369,7 @@ func (arp *AdaptoRTOProvider) transitionToOverload() {
 // OVERLOAD -> CRUISE
 func (arp *AdaptoRTOProvider) transitionToFailure() {
 	if arp.state == OVERLOAD {
-		// TODO: impelment FAILURE STATE
+		// TODO:FAILURE: impelment FAILURE STATE
 		arp.logger.Info(fmt.Sprintf("transitioning from %s to FAILURE", StateAsString(arp.state)),
 			"id", arp.id,
 		)
@@ -465,14 +464,14 @@ func (arp *AdaptoRTOProvider) updateKMargin(fr float64) {
 
 func (arp *AdaptoRTOProvider) updateCapacityEstimate(fr float64) {
 	// stil in overload
-	// TODO: this is updated too frequently
+	// TODO:FAILURE: this is updated too frequently
 	if fr >= arp.sloFailureRateAdjusted {
 		// shrink pacing to res
 		arp.overloadThresholdReq = max(arp.succeeded(), 2) // make sure to max with 2, not 1
 		arp.sendRateInterval = arp.interval / time.Duration(
 			arp.overloadThresholdReq,
 		)
-		// TODO: boundary check sendRateInterval
+		// TODO:FAILURE: boundary check sendRateInterval
 		arp.consecutivePacingGains = 0 // reset consecutive gains
 		arp.logger.Info("still in overload, shrinking pacing",
 			"id", arp.id,
@@ -489,7 +488,7 @@ func (arp *AdaptoRTOProvider) updateCapacityEstimate(fr float64) {
 	arp.sendRateInterval = arp.interval / time.Duration(
 		arp.overloadThresholdReq,
 	)
-	// TODO: boundary check sendRateInterval
+	// TODO:FAILURE: boundary check sendRateInterval
 	arp.consecutivePacingGains++
 	arp.logger.Info("still in overload, growing pacing",
 		"id", arp.id,
@@ -573,7 +572,7 @@ func (arp *AdaptoRTOProvider) NewTimeout(ctx context.Context) (timeout time.Dura
 		// nextSchedulable = schedule interval * requests already in line + time.Now()
 		// suspend = arp.schedulingInterval * arp.queueLength
 
-		// TODO: must check arp.sendRateInterval itself does not exceed the sloLatency
+		// TODO:FAILURE must check arp.sendRateInterval itself does not exceed the sloLatency
 		suspend := arp.sendRateInterval * time.Duration(arp.queueLength)
 		adjustedTimeout := arp.sloLatency - suspend
 		if adjustedTimeout < arp.timeout {
@@ -719,6 +718,10 @@ func (arp *AdaptoRTOProvider) OnRtt(signal RttSignal) {
 	case STARTUP:
 		// update timeout during startup aggressively to find good kMargin fast
 		arp.timeout = arp.ComputeNewRTO(signal.Duration)
+		// should drain if the destination is already overloaded
+		if arp.timeout == arp.sloLatency {
+			arp.transitionToDrain()
+		}
 		return
 	case CRUISE:
 		// Declare overload if max timeout is breached
@@ -783,7 +786,7 @@ func (arp *AdaptoRTOProvider) OnInterval() {
 
 	switch arp.state {
 	case STARTUP:
-		arp.prevSuccRess.Add(arp.succeeded())
+		/* arp.prevSuccRess.Add(arp.succeeded()) */
 		if arp.hasEnoughSamples() {
 			arp.logger.Info("not enough samples",
 				"id", arp.id,
@@ -806,7 +809,7 @@ func (arp *AdaptoRTOProvider) OnInterval() {
 		}
 		return
 	case CRUISE:
-		arp.prevSuccRess.Add(arp.succeeded())
+		/* arp.prevSuccRess.Add(arp.succeeded()) */
 		if arp.hasEnoughSamples() {
 			arp.logger.Info("not enough samples",
 				"id", arp.id,
@@ -824,12 +827,26 @@ func (arp *AdaptoRTOProvider) OnInterval() {
 		}
 		return
 	case DRAIN:
+		if arp.hasEnoughSamples() {
+			arp.logger.Info("not enough samples",
+				"id", arp.id,
+				"resAdjusted", arp.res-arp.carry,
+				"minSamplesRequired", arp.minSamplesRequired,
+			)
+			return
+		}
+		defer arp.resetCounters() // reset counters each interval
+		fr := arp.computeFailure()
+		arp.updateKMargin(fr)
+		timeout := arp.ComputeNewRTO(time.Duration(arp.srtt>>LOG2_ALPHA))
+		if timeout == arp.sloLatency {
+			// do not decrement intervals remaining until timeout is tabilized
+			return
+		}
 		arp.overloadDrainIntervalsRemaining--
 		if arp.overloadDrainIntervalsRemaining == 0 {
 			arp.transitionToOverload()
-
 		}
-		defer arp.resetCounters() // reset counters each interval
 		return
 	case OVERLOAD:
 		if arp.hasEnoughSamples() {

@@ -455,7 +455,8 @@ func (arp *AdaptoRTOProvider) updateKMarginShortTerm(fr float64) {
 	}
 }
 func (arp *AdaptoRTOProvider) updateKMarginLongTerm() {
-	if arp.sfr >= arp.sloFailureRateAdjusted {
+	// use non-adjusted slo for long-term adjusments
+	if arp.sfr >= arp.sloFailureRate {
 		arp.kMargin++
 		arp.logger.Info("incrementing kMargin (long-term)",
 			"id", arp.id,

@@ -452,7 +452,7 @@ func (arp *AdaptoRTOProvider) updateKMargin(fr float64) {
 	} else {
 		// if the smoothed fr is well over threshold, try decrementing kMargin
 		if arp.sfr < arp.sloFailureRateAdjusted {
-			arp.kMargin--
+			arp.kMargin = max(arp.kMargin-1, 1)
 			arp.logger.Info("shrinking kMargin",
 				"id", arp.id,
 				"sfr", arp.sfr,

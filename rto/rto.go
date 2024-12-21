@@ -814,6 +814,7 @@ func (arp *AdaptoRTOProvider) OnInterval() {
 			)
 			return
 		}
+		defer arp.resetCounters() // reset counters each interval
 		fr := arp.computeFailure()
 		arp.updateKMargin(fr)
 		arp.timeout = arp.ComputeNewRTO(time.Duration(arp.srtt >> LOG2_ALPHA))

@@ -240,7 +240,7 @@ func NewAdaptoRTOProvider(config Config) *AdaptoRTOProvider {
 	/* } */
 	return &AdaptoRTOProvider{
 		logger:  l,
-		state:   STARTUP,
+		state:   CRUISE,
 		timeout: config.SLOLatency,
 
 		/* kMargin: kMargin, */
@@ -734,9 +734,9 @@ func (arp *AdaptoRTOProvider) OnRtt(signal RttSignal) {
 	switch arp.state {
 	case STARTUP:
 		// update timeout during startup aggressively to find good kMargin fast
-		arp.timeout = arp.ComputeNewRTO(signal.Duration)
+		timeout := arp.ComputeNewRTO(signal.Duration)
 		// should drain if the destination is already overloaded
-		if arp.timeout == arp.sloLatency {
+		if timeout == arp.sloLatency {
 			arp.transitionToDrain()
 		}
 		return

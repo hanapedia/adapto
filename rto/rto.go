@@ -628,8 +628,9 @@ func (arp *AdaptoRTOProvider) NewTimeout(ctx context.Context) (timeout time.Dura
 }
 
 // ComputeNewRTO computes new rto based on new rtt
+// new timeout value is returned and can be used to set timeouts or overload detection
 // MUST be called in thread safe manner as it does not lock mu
-func (arp *AdaptoRTOProvider) ComputeNewRTO(rtt time.Duration, updateTimeout bool) {
+func (arp *AdaptoRTOProvider) ComputeNewRTO(rtt time.Duration) time.Duration {
 	// boundary check
 	if rtt < 0 {
 		rtt *= -1
@@ -639,13 +640,13 @@ func (arp *AdaptoRTOProvider) ComputeNewRTO(rtt time.Duration, updateTimeout boo
 		arp.srtt = int64(rtt) * ALPHA_SCALING                   // use the scaled srtt for Jacobson. R * 8 since alpha = 1/8
 		arp.rttvar = (int64(rtt) >> 1) * BETA_SCALING           // use the scaled rttvar for Jacobson. (R / 2) * 4 since beta = 1/4
 		rto := rtt + time.Duration(DEFAULT_K_MARGIN*arp.rttvar) // because rtt = srtt / 8
-		arp.timeout = min(max(rto, arp.min), arp.sloLatency)
+		timeout := min(max(rto, arp.min), arp.sloLatency)
 		arp.logger.Debug("new RTO computed",
 			"id", arp.id,
-			"rto", arp.timeout.String(),
+			"rto", timeout.String(),
 			"rtt", rtt.String(),
 		)
-		return
+		return timeout
 	}
 
 	rto, srtt, rttvar := jacobsonCalc(int64(rtt), arp.srtt, arp.rttvar, arp.kMargin)
@@ -653,15 +654,13 @@ func (arp *AdaptoRTOProvider) ComputeNewRTO(rtt time.Duration, updateTimeout boo
 	// do not update these values when overload is detected
 	arp.srtt = srtt
 	arp.rttvar = rttvar
-	if !updateTimeout {
-		return
-	}
-	arp.timeout = min(max(time.Duration(rto), arp.min), arp.sloLatency)
+	timeout := min(max(time.Duration(rto), arp.min), arp.sloLatency)
 	arp.logger.Debug("new RTO computed",
 		"id", arp.id,
-		"rto", arp.timeout.String(),
+		"rto", timeout.String(),
 		"rtt", rtt.String(),
 	)
+	return timeout
 }
 
 // StartWithSLO starts the provider by spawning a goroutine that waits for new rtt or timeout event and updates the timeout value accordingly. timeout calculations are also adjusted to meet the SLO
@@ -717,12 +716,16 @@ func (arp *AdaptoRTOProvider) OnRtt(signal RttSignal) {
 		)
 	}
 	switch arp.state {
+	case STARTUP:
+		// update only srtt and rttvar with choked timeout
+		arp.ComputeNewRTO(signal.Duration)
+		return
 	case DRAIN:
 		// update only srtt and rttvar with choked timeout
-		arp.ComputeNewRTO(signal.Duration, false)
+		arp.ComputeNewRTO(signal.Duration)
 		return
 	case OVERLOAD:
-		arp.ComputeNewRTO(signal.Duration, false)
+		arp.ComputeNewRTO(signal.Duration)
 		// check that the timeout leaves enough room to fit at least 1 req
 		// if not, it is likely to be sending too fast, either because
 		// 1. capacity estimate was recently increased
@@ -732,7 +735,7 @@ func (arp *AdaptoRTOProvider) OnRtt(signal RttSignal) {
 		/* 	arp.transitionToDrain() */
 		/* } */
 		return
-	case CRUISE, STARTUP:
+	case CRUISE:
 		// Declare overload if max timeout is breached
 		/* if arp.overloadDetectionTiming == MaxTimeoutExceeded && signal.Duration == arp.sloLatency { */
 		/* 	arp.transitionToDrain() */
@@ -740,7 +743,10 @@ func (arp *AdaptoRTOProvider) OnRtt(signal RttSignal) {
 		/* } */
 
 		// compute new timeout with rtt
-		arp.ComputeNewRTO(signal.Duration, false)
+		timeout := arp.ComputeNewRTO(signal.Duration)
+		if timeout == arp.sloLatency {
+			arp.transitionToDrain()
+		}
 
 		// Declare overload if max timeout is generated
 		/* if arp.overloadDetectionTiming == MaxTimeoutGenerated && arp.timeout == arp.sloLatency { */
@@ -812,7 +818,7 @@ func (arp *AdaptoRTOProvider) OnInterval() {
 		defer arp.resetCounters() // reset counters each interval
 		fr := arp.computeFailure()
 		arp.updateKMargin(fr)
-		arp.ComputeNewRTO(time.Duration(arp.srtt >> LOG2_ALPHA), true)
+		arp.timeout = arp.ComputeNewRTO(time.Duration(arp.srtt>>LOG2_ALPHA))
 		if arp.timeout == arp.sloLatency {
 			arp.transitionToDrain()
 		}
@@ -844,7 +850,7 @@ func (arp *AdaptoRTOProvider) OnInterval() {
 		}
 		fr := arp.computeFailure()
 		arp.updateCapacityEstimate(fr)
-		arp.ComputeNewRTO(time.Duration(arp.srtt >> LOG2_ALPHA), true)
+		arp.timeout = arp.ComputeNewRTO(time.Duration(arp.srtt >> LOG2_ALPHA))
 		if arp.timeout == arp.sloLatency {
 			arp.transitionToDrain()
 		}

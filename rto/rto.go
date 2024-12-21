@@ -867,7 +867,7 @@ func (arp *AdaptoRTOProvider) OnInterval() {
 			// do not decrement intervals remaining until timeout is tabilized
 			return
 		}
-		if fr > arp.lastFr {
+		if fr < arp.lastFr {
 			// make sure that the failure rate is decreasing by draining
 			return
 		}

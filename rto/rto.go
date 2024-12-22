@@ -798,6 +798,7 @@ func (arp *AdaptoRTOProvider) OnInterval() {
 		arp.timeout = arp.ComputeNewRTO(time.Duration(arp.srtt >> LOG2_ALPHA))
 		if arp.timeout == arp.sloLatency {
 			arp.transitionToDrain()
+			return
 		}
 		if fr < arp.sloFailureRateAdjusted {
 			// startup intervals, where timeout, srtt, and rttvar are updated,

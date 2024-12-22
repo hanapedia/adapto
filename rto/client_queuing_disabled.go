@@ -97,7 +97,7 @@ func NewAdaptoRTOWCQProvider(config Config) *AdaptoRTOWCQProvider {
 	}
 	return &AdaptoRTOWCQProvider{
 		logger:  l,
-		state:   STARTUP,
+		state:   WCQ_STARTUP,
 		timeout: config.SLOLatency,
 
 		kMargin: kMargin,
@@ -169,7 +169,7 @@ func (arp *AdaptoRTOWCQProvider) transitionToDrain() {
 			"minRtt", arp.minRtt,
 			"initialOverloadThresholdReq", arp.overloadThresholdReq,
 		)
-		arp.state = DRAIN
+		arp.state = WCQ_DRAIN
 		return
 	}
 	arp.logger.Error("Cannot transition to DRAIN", "currState", StateAsString(arp.state))
@@ -303,7 +303,7 @@ func (arp *AdaptoRTOWCQProvider) computeFailure() float64 {
 	} else {
 		// compute smoothing weight by 1 min / interval, so it resembles something close to 1 min smoothing
 		// update sfr only using fr from NORMAL state
-		if arp.state == CRUISE {
+		if arp.state == WCQ_CRUISE {
 			arp.sfr = arp.sfr + (fr-arp.sfr)/arp.sfrWeight
 		}
 	}
@@ -421,7 +421,7 @@ func (arp *AdaptoRTOWCQProvider) OnRtt(signal RttSignal) {
 		// startup intervals, where timeout, srtt, and rttvar are updated,
 		// but sloLatency is used to minimize the ACTUAL failure rate.
 		// the internal failure rate tracked by arp.failed should be updated using the updated timeout value
-		if arp.state == STARTUP && arp.timeout < signal.Duration {
+		if arp.state == WCQ_STARTUP && arp.timeout < signal.Duration {
 			arp.failed++
 		}
 	}
@@ -473,6 +473,7 @@ func (arp *AdaptoRTOWCQProvider) OnInterval() {
 		arp.timeout = arp.ComputeNewRTO(time.Duration(arp.srtt >> LOG2_ALPHA))
 		if arp.timeout == arp.sloLatency {
 			arp.transitionToDrain()
+			return
 		}
 		if fr < arp.sloFailureRateAdjusted {
 			// startup intervals, where timeout, srtt, and rttvar are updated,

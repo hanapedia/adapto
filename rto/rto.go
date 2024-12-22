@@ -547,7 +547,7 @@ func (arp *AdaptoRTOProvider) inflight() int64 {
 // if failed from the last period is zero, returns true no matter the sample counts
 // this allows skipping
 func (arp *AdaptoRTOProvider) hasEnoughSamples() bool {
-	return arp.failed == 0 || arp.res-arp.carry <= int64(math.Round(arp.minSamplesRequired))
+	return arp.failed == 0 || arp.res-arp.carry >= int64(math.Round(arp.minSamplesRequired))
 }
 
 func (arp *AdaptoRTOProvider) computeFailure() float64 {
@@ -818,7 +818,7 @@ func (arp *AdaptoRTOProvider) OnInterval() {
 	switch arp.state {
 	case STARTUP:
 		arp.prevSuccRess.Add(arp.succeeded())
-		if arp.hasEnoughSamples() {
+		if !arp.hasEnoughSamples() {
 			arp.logger.Info("not enough samples",
 				"id", arp.id,
 				"resAdjusted", arp.res-arp.carry,
@@ -846,7 +846,7 @@ func (arp *AdaptoRTOProvider) OnInterval() {
 		return
 	case CRUISE:
 		arp.prevSuccRess.Add(arp.succeeded())
-		if arp.hasEnoughSamples() {
+		if !arp.hasEnoughSamples() {
 			arp.logger.Info("not enough samples",
 				"id", arp.id,
 				"resAdjusted", arp.res-arp.carry,
@@ -876,7 +876,7 @@ func (arp *AdaptoRTOProvider) OnInterval() {
 
 		return
 	case DRAIN:
-		if arp.hasEnoughSamples() {
+		if !arp.hasEnoughSamples() {
 			arp.logger.Info("not enough samples",
 				"id", arp.id,
 				"resAdjusted", arp.res-arp.carry,
@@ -905,7 +905,7 @@ func (arp *AdaptoRTOProvider) OnInterval() {
 			arp.resetCounters() // reset counters each interval
 			return
 		}
-		if arp.hasEnoughSamples() {
+		if !arp.hasEnoughSamples() {
 			arp.logger.Info("not enough samples",
 				"id", arp.id,
 				"resAdjusted", arp.res-arp.carry,

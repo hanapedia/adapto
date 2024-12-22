@@ -35,6 +35,12 @@ const (
 	DEFAULT_STARTUP_INTERVALS        uint64  = 4   // intervals to wait for the kMargin to stabilize
 )
 
+type AdaptoRTOProviderInterface interface {
+	NewTimeout(ctx context.Context) (timeout time.Duration, rttCh chan<- RttSignal, err error)
+	CapacityEstimate() int64
+	State() string
+}
+
 // RttSignal is used for reporting rtt.
 type RttSignal struct {
 	Duration time.Duration
@@ -102,18 +108,19 @@ func (c ConfigValidationError) Error() string {
 	return fmt.Sprintf("config validation error: msg=%s", c.msg)
 }
 
-func DefaultOnIntervalHandler(*AdaptoRTOProvider) {}
+func DefaultOnIntervalHandler(AdaptoRTOProviderInterface) {}
 
 type Config struct {
 	Id                      string
-	SLOLatency              time.Duration            // max timeout value allowed
-	Min                     time.Duration            // min timeout value allowed
-	SLOFailureRate          float64                  // target failure rate SLO
-	Interval                time.Duration            // interval for failure rate calculations
-	KMargin                 int64                    // starting kMargin for with SLO and static kMargin for without SLO
-	OverloadDetectionTiming OverloadDetectionTiming  // timing when to check for overload
-	OverloadDrainIntervals  uint64                   // number of intervals to drain overloading requests
-	OnIntervalHandler       func(*AdaptoRTOProvider) // handler to be called at the end of every interval
+	SLOLatency              time.Duration                    // max timeout value allowed
+	Min                     time.Duration                    // min timeout value allowed
+	SLOFailureRate          float64                          // target failure rate SLO
+	Interval                time.Duration                    // interval for failure rate calculations
+	KMargin                 int64                            // starting kMargin for with SLO and static kMargin for without SLO
+	OverloadDetectionTiming OverloadDetectionTiming          // timing when to check for overload
+	OverloadDrainIntervals  uint64                           // number of intervals to drain overloading requests
+	OnIntervalHandler       func(AdaptoRTOProviderInterface) // handler to be called at the end of every interval
+	DisableClientQueuing    bool                             //flag for feature gating client queuing
 
 	Logger logger.Logger // optional logger
 }
@@ -216,16 +223,16 @@ type AdaptoRTOProvider struct {
 	term                   int64   // current number of terms in sfr intervals
 
 	// configuration fields
-	id             string
-	min            time.Duration
-	sloLatency     time.Duration
-	sloFailureRate float64       // slo failure rate
-	interval       time.Duration // interval for computing failure rate.
+	id                      string
+	min                     time.Duration
+	sloLatency              time.Duration
+	sloFailureRate          float64       // slo failure rate
+	interval                time.Duration // interval for computing failure rate.
 	overloadDetectionTiming OverloadDetectionTiming
 	overloadDrainIntervals  uint64
 	// handler function to be called at the end of every interval
 	// WARNING: this is called after the counter has been reset
-	onIntervalHandler func(*AdaptoRTOProvider)
+	onIntervalHandler func(AdaptoRTOProviderInterface)
 }
 
 func NewAdaptoRTOProvider(config Config) *AdaptoRTOProvider {
@@ -791,6 +798,7 @@ func (arp *AdaptoRTOProvider) OnInterval() {
 		arp.timeout = arp.ComputeNewRTO(time.Duration(arp.srtt >> LOG2_ALPHA))
 		if arp.timeout == arp.sloLatency {
 			arp.transitionToDrain()
+			return
 		}
 		if fr < arp.sloFailureRateAdjusted {
 			// startup intervals, where timeout, srtt, and rttvar are updated,
@@ -913,6 +921,9 @@ func init() {
 // GetTimeout retrieves timeout value using provider with given id in config.
 // if no provider with matching id is found, creates a new provider
 func GetTimeout(ctx context.Context, config Config) (timeout time.Duration, rttCh chan<- RttSignal, err error) {
+	if config.DisableClientQueuing {
+		return getTimeoutWCQ(ctx, config)
+	}
 	provider, ok := AdaptoRTOProviders[config.Id]
 	if !ok {
 		err := config.Validate()
@@ -929,15 +940,13 @@ func GetTimeout(ctx context.Context, config Config) (timeout time.Duration, rttC
 }
 
 // CapacityEstimate returns current overload estimate
+// If not called in onIntervalHandler, must acquire lock first
 func (arp *AdaptoRTOProvider) CapacityEstimate() int64 {
-	arp.mu.Lock()
-	defer arp.mu.Unlock()
 	return arp.overloadThresholdReq
 }
 
 // State returns current state
+// If not called in onIntervalHandler, must acquire lock first
 func (arp *AdaptoRTOProvider) State() string {
-	arp.mu.Lock()
-	defer arp.mu.Unlock()
 	return StateAsString(arp.state)
 }

@@ -940,15 +940,13 @@ func GetTimeout(ctx context.Context, config Config) (timeout time.Duration, rttC
 }
 
 // CapacityEstimate returns current overload estimate
+// If not called in onIntervalHandler, must acquire lock first
 func (arp *AdaptoRTOProvider) CapacityEstimate() int64 {
-	arp.mu.Lock()
-	defer arp.mu.Unlock()
 	return arp.overloadThresholdReq
 }
 
 // State returns current state
+// If not called in onIntervalHandler, must acquire lock first
 func (arp *AdaptoRTOProvider) State() string {
-	arp.mu.Lock()
-	defer arp.mu.Unlock()
 	return StateAsString(arp.state)
 }

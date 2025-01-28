@@ -853,6 +853,15 @@ func (arp *AdaptoRTOProvider) OnInterval() {
 		}
 		defer arp.resetCounters() // reset counters each interval
 
+		// decrement interval counter if failure is suspected
+		if arp.succeeded() == 0 {
+			arp.overloadDrainIntervalsRemaining--
+			if arp.overloadDrainIntervalsRemaining == 0 {
+				arp.transitionToOverload()
+			}
+			return
+		}
+
 		current := arp.ComputeNewRTO(time.Duration(arp.srtt >> LOG2_ALPHA))
 		// drain until srtt and rtt var has dropped so that produced timeout is (sloLatency - chokedTimeout) / 8 over chokedTimeout
 		if current > (arp.sloLatency-arp.timeout)>>time.Duration(LOG2_ALPHA)+arp.timeout {
@@ -881,14 +890,14 @@ func (arp *AdaptoRTOProvider) OnInterval() {
 			return
 		}
 		defer arp.resetCounters() // reset counters each interval
-		if arp.dropped == 0 {
+		fr := arp.computeFailure()
+		if arp.dropped == 0 && fr < arp.sloFailureRateAdjusted {
 			// undeclare overload
 			// no need to reset variables as they are all reset at the beginning of interval
 			// reset threshold and send rate interval
 			arp.transitionToCruise()
 			return
 		}
-		fr := arp.computeFailure()
 		// should update sending rate if drop ratio is too high and there is room in failure rate
 		// if failure rate is too high, adjust timeout.
 		arp.timeout = arp.ComputeNewRTO(time.Duration(arp.srtt >> LOG2_ALPHA))

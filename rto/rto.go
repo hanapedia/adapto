@@ -87,6 +87,22 @@ func StateAsString(state RTOProviderState) string {
 	return "UNSUPPORTED"
 }
 
+func StateAsIOTA(state string) RTOProviderState {
+	switch state {
+	case "CRUISE":
+		return CRUISE
+	case "STARTUP":
+		return STARTUP
+	case "DRAIN":
+		return DRAIN
+	case "OVERLOAD":
+		return OVERLOAD
+	case "FAILURE":
+		return FAILURE
+	}
+	return -1
+}
+
 type OverloadDetectionTiming = string
 
 const (

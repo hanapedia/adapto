@@ -204,10 +204,10 @@ type AdaptoRTOProvider struct {
 
 	// per Interval counters
 	// these counters are cleared per interval
-	req           int64     // number of requests sent
-	res           int64     // number of responses received
-	failed        int64     // number of requests failed. Only timeout failure are counted
-	genericErr    int64     // number of generic errs. these should not count towards internal failure rate
+	req        int64 // number of requests sent
+	res        int64 // number of responses received
+	failed     int64 // number of requests failed. Only timeout failure are counted
+	genericErr int64 // number of generic errs. these should not count towards internal failure rate
 	/* carry         int64     // carry over from previous interval */
 	dropped       int64     // number of request dropped due to sending rate control
 	intervalStart time.Time // timestamp of the beginning of the current interval
@@ -221,6 +221,7 @@ type AdaptoRTOProvider struct {
 	sendRateInterval                time.Duration           // pacing interval for controlling sending rate at overloadThresholdReq / interval
 	overloadDrainIntervalsRemaining uint64                  // counter for the number of drain intervals remaining
 	consecutivePacingGains          uint64                  // counter for the number of consecutive pacing gains
+	lastCapacityIncrement           int64                   // record of the last increment to capacity estimate
 	prevSuccRess                    *ring.RingBuffer[int64] // ring buffer for recording previous successful res samples
 	prevReqs                        *ring.RingBuffer[int64] // ring buffer for recording previous reqs samples
 	nextTransimssion                time.Time               // timestap for next transmission when sendRate is enforced
@@ -512,33 +513,55 @@ func (arp *AdaptoRTOProvider) doubleTimeout(fr float64, timeout time.Duration) t
 	return min(timeout, arp.sloLatency)
 }
 
-func (arp *AdaptoRTOProvider) updateCapacityEstimate(fr float64) {
+func (arp *AdaptoRTOProvider) updateCapacityEstimateOrDoubleTimeout(fr float64) {
 	// stil in overload
 	if fr >= arp.sloFailureRateAdjusted {
-		// slow down pacing gains
+		// pacing increased too much
+		if arp.lastCapacityIncrement > 0 {
+			arp.consecutivePacingGains = 0
+			arp.overloadThresholdReq -= arp.lastCapacityIncrement
+			arp.sendRateInterval = arp.interval / time.Duration(
+				arp.overloadThresholdReq,
+			)
+			arp.logger.Info("still in overload, sending too fast, shrinking pacing",
+				"id", arp.id,
+				"sendRateInterval", arp.sendRateInterval,
+				"overloadThresholdReq", arp.overloadThresholdReq,
+				"dropped", arp.dropped,
+				"req", arp.req,
+				"lastCapacityIncrement", arp.lastCapacityIncrement,
+			)
+			return
+		}
+
+		// handle capacity decrease
+		arp.timeout = arp.doubleTimeout(fr, arp.timeout)
 		arp.consecutivePacingGains = 0 // reset consecutive gains
-		arp.logger.Info("still in overload, shrinking pacing",
+		arp.logger.Info("still in overload, possible capacity decrease, doubling timeout",
 			"id", arp.id,
 			"sendRateInterval", arp.sendRateInterval,
 			"overloadThresholdReq", arp.overloadThresholdReq,
 			"dropped", arp.dropped,
 			"req", arp.req,
+			"timeout", arp.timeout,
 		)
 		return
 	}
 	// gain pacing by x1.125 x 2^consecutivePacingGains
 	// this helps faster recovery of pacing from circuit broken state
-	arp.overloadThresholdReq += max(max(arp.overloadThresholdReq>>LOG2_PACING_GAIN, 1)<<arp.consecutivePacingGains, 1)
+	arp.lastCapacityIncrement = max(max(arp.overloadThresholdReq>>LOG2_PACING_GAIN, 1)<<arp.consecutivePacingGains, 1)
+	arp.overloadThresholdReq += arp.lastCapacityIncrement
 	arp.sendRateInterval = arp.interval / time.Duration(
 		arp.overloadThresholdReq,
 	)
 	arp.consecutivePacingGains++
-	arp.logger.Info("still in overload, growing pacing",
+	arp.logger.Info("still in overload, growing pacing to seek for additional capacity",
 		"id", arp.id,
 		"sendRateInterval", arp.sendRateInterval,
 		"overloadThresholdReq", arp.overloadThresholdReq,
 		"dropped", arp.dropped,
 		"req", arp.req,
+		"capacityIncrement", arp.lastCapacityIncrement,
 	)
 	return
 }
@@ -566,7 +589,7 @@ func (arp *AdaptoRTOProvider) hasEnoughSamples() bool {
 
 func (arp *AdaptoRTOProvider) computeFailure() float64 {
 	fr := float64(arp.failed) / float64(arp.res) // failure rate for current interval
-	arp.lastFr = fr                             // update previous failure rate
+	arp.lastFr = fr                              // update previous failure rate
 	if arp.sfr == 0 {
 		// first observation of fr
 		arp.sfr = fr
@@ -921,13 +944,11 @@ func (arp *AdaptoRTOProvider) OnInterval() {
 		// should update sending rate if drop ratio is too high and there is room in failure rate
 		// if failure rate is too high, adjust timeout.
 		arp.timeout = arp.ComputeNewRTO(time.Duration(arp.srtt >> LOG2_ALPHA))
-		if fr > arp.sloFailureRateAdjusted {
-			arp.timeout = arp.doubleTimeout(fr, arp.timeout)
-			if arp.timeout == arp.sloLatency {
-				arp.transitionToDrain()
-			}
+		arp.updateCapacityEstimateOrDoubleTimeout(fr) // can call no matter the fr as fr is checked in the method
+		if arp.timeout == arp.sloLatency {
+			arp.transitionToDrain()
+			return
 		}
-		arp.updateCapacityEstimate(fr) // can call no matter the fr as fr is checked in the method
 		return
 	case FAILURE:
 		defer arp.resetCounters()

@@ -948,6 +948,14 @@ func GetTimeout(ctx context.Context, config Config) (timeout time.Duration, rttC
 	return timeout, rttCh, err
 }
 
+func GetState(config Config) (string, error) {
+	provider, ok := AdaptoRTOProviders[config.Id]
+	if !ok {
+		return "", fmt.Errorf("No provider with id=%s found", config.Id)
+	}
+	return provider.State(), nil
+}
+
 // CapacityEstimate returns current overload estimate
 // If not called in onIntervalHandler, must acquire lock first
 func (arp *AdaptoRTOProvider) CapacityEstimate() int64 {

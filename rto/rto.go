@@ -87,6 +87,22 @@ func StateAsString(state RTOProviderState) string {
 	return "UNSUPPORTED"
 }
 
+func StateAsIOTA(state string) RTOProviderState {
+	switch state {
+	case "CRUISE":
+		return CRUISE
+	case "STARTUP":
+		return STARTUP
+	case "DRAIN":
+		return DRAIN
+	case "OVERLOAD":
+		return OVERLOAD
+	case "FAILURE":
+		return FAILURE
+	}
+	return -1
+}
+
 type OverloadDetectionTiming = string
 
 const (
@@ -538,6 +554,16 @@ func (arp *AdaptoRTOProvider) inflight() int64 {
 // if failed from the last period is zero, returns true no matter the sample counts
 // this allows skipping
 func (arp *AdaptoRTOProvider) hasEnoughSamples() bool {
+	arp.logger.Info("checking for number of samples",
+		"id", arp.id,
+		"resAdjusted", arp.res-arp.carry,
+		"minSamplesRequired", arp.minSamplesRequired,
+		"res", arp.res,
+		"req", arp.req,
+		"carry", arp.carry,
+		"failed", arp.failed,
+		"dropped", arp.dropped,
+	)
 	return arp.failed == 0 || arp.res-arp.carry >= int64(math.Round(arp.minSamplesRequired))
 }
 
@@ -789,6 +815,11 @@ func (arp *AdaptoRTOProvider) OnInterval() {
 				"id", arp.id,
 				"resAdjusted", arp.res-arp.carry,
 				"minSamplesRequired", arp.minSamplesRequired,
+				"res", arp.res,
+				"req", arp.req,
+				"carry", arp.carry,
+				"failed", arp.failed,
+				"dropped", arp.dropped,
 			)
 			return
 		}
@@ -946,6 +977,14 @@ func GetTimeout(ctx context.Context, config Config) (timeout time.Duration, rttC
 	timeout, rttCh, err = provider.NewTimeout(ctx)
 
 	return timeout, rttCh, err
+}
+
+func GetState(config Config) (string, error) {
+	provider, ok := AdaptoRTOProviders[config.Id]
+	if !ok {
+		return "", fmt.Errorf("No provider with id=%s found", config.Id)
+	}
+	return provider.State(), nil
 }
 
 // CapacityEstimate returns current overload estimate

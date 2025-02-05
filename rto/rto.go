@@ -784,14 +784,14 @@ func (arp *AdaptoRTOProvider) OnInterval() {
 	switch arp.state {
 	case STARTUP:
 		arp.prevSuccRess.Add(arp.succeeded())
-		if !arp.hasEnoughSamples() {
-			arp.logger.Info("not enough samples",
-				"id", arp.id,
-				"resAdjusted", arp.res-arp.carry,
-				"minSamplesRequired", arp.minSamplesRequired,
-			)
-			return
-		}
+		/* if !arp.hasEnoughSamples() { */
+		/* 	arp.logger.Info("not enough samples", */
+		/* 		"id", arp.id, */
+		/* 		"resAdjusted", arp.res-arp.carry, */
+		/* 		"minSamplesRequired", arp.minSamplesRequired, */
+		/* 	) */
+		/* 	return */
+		/* } */
 		defer arp.resetCounters() // reset counters each interval
 		fr := arp.computeFailure()
 		arp.updateKMarginShortTerm(fr)
@@ -813,14 +813,14 @@ func (arp *AdaptoRTOProvider) OnInterval() {
 		return
 	case CRUISE:
 		arp.prevSuccRess.Add(arp.succeeded())
-		if !arp.hasEnoughSamples() {
-			arp.logger.Info("not enough samples",
-				"id", arp.id,
-				"resAdjusted", arp.res-arp.carry,
-				"minSamplesRequired", arp.minSamplesRequired,
-			)
-			return
-		}
+		/* if !arp.hasEnoughSamples() { */
+		/* 	arp.logger.Info("not enough samples", */
+		/* 		"id", arp.id, */
+		/* 		"resAdjusted", arp.res-arp.carry, */
+		/* 		"minSamplesRequired", arp.minSamplesRequired, */
+		/* 	) */
+		/* 	return */
+		/* } */
 		defer arp.resetCounters() // reset counters each interval
 		fr := arp.computeFailure()
 		timeout := arp.ComputeNewRTO(time.Duration(arp.srtt >> LOG2_ALPHA))
@@ -843,14 +843,14 @@ func (arp *AdaptoRTOProvider) OnInterval() {
 
 		return
 	case DRAIN:
-		if !arp.hasEnoughSamples() {
-			arp.logger.Info("not enough samples",
-				"id", arp.id,
-				"resAdjusted", arp.res-arp.carry,
-				"minSamplesRequired", arp.minSamplesRequired,
-			)
-			return
-		}
+		/* if !arp.hasEnoughSamples() { */
+		/* 	arp.logger.Info("not enough samples", */
+		/* 		"id", arp.id, */
+		/* 		"resAdjusted", arp.res-arp.carry, */
+		/* 		"minSamplesRequired", arp.minSamplesRequired, */
+		/* 	) */
+		/* 	return */
+		/* } */
 		defer arp.resetCounters() // reset counters each interval
 
 		// decrement interval counter if failure is suspected
@@ -881,14 +881,14 @@ func (arp *AdaptoRTOProvider) OnInterval() {
 			arp.resetCounters() // reset counters each interval
 			return
 		}
-		if !arp.hasEnoughSamples() {
-			arp.logger.Info("not enough samples",
-				"id", arp.id,
-				"resAdjusted", arp.res-arp.carry,
-				"minSamplesRequired", arp.minSamplesRequired,
-			)
-			return
-		}
+		/* if !arp.hasEnoughSamples() { */
+		/* 	arp.logger.Info("not enough samples", */
+		/* 		"id", arp.id, */
+		/* 		"resAdjusted", arp.res-arp.carry, */
+		/* 		"minSamplesRequired", arp.minSamplesRequired, */
+		/* 	) */
+		/* 	return */
+		/* } */
 		defer arp.resetCounters() // reset counters each interval
 		fr := arp.computeFailure()
 		if arp.dropped == 0 && fr < arp.sloFailureRateAdjusted {

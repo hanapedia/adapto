@@ -937,9 +937,8 @@ func (arp *AdaptoRTOProvider) OnInterval() {
 			if arp.timeout == arp.sloLatency {
 				arp.transitionToDrain()
 			}
-		} else {
-			arp.updateCapacityEstimate(fr)
 		}
+		arp.updateCapacityEstimate(fr) // can call no matter the fr as fr is checked in the method
 		return
 	case FAILURE:
 		defer arp.resetCounters()

@@ -554,6 +554,16 @@ func (arp *AdaptoRTOProvider) inflight() int64 {
 // if failed from the last period is zero, returns true no matter the sample counts
 // this allows skipping
 func (arp *AdaptoRTOProvider) hasEnoughSamples() bool {
+	arp.logger.Info("checking for number of samples",
+		"id", arp.id,
+		"resAdjusted", arp.res-arp.carry,
+		"minSamplesRequired", arp.minSamplesRequired,
+		"res", arp.res,
+		"req", arp.req,
+		"carry", arp.carry,
+		"failed", arp.failed,
+		"dropped", arp.dropped,
+	)
 	return arp.failed == 0 || arp.res-arp.carry >= int64(math.Round(arp.minSamplesRequired))
 }
 
@@ -805,6 +815,11 @@ func (arp *AdaptoRTOProvider) OnInterval() {
 				"id", arp.id,
 				"resAdjusted", arp.res-arp.carry,
 				"minSamplesRequired", arp.minSamplesRequired,
+				"res", arp.res,
+				"req", arp.req,
+				"carry", arp.carry,
+				"failed", arp.failed,
+				"dropped", arp.dropped,
 			)
 			return
 		}

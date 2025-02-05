@@ -208,7 +208,7 @@ type AdaptoRTOProvider struct {
 	res           int64     // number of responses received
 	failed        int64     // number of requests failed. Only timeout failure are counted
 	genericErr    int64     // number of generic errs. these should not count towards internal failure rate
-	carry         int64     // carry over from previous interval
+	/* carry         int64     // carry over from previous interval */
 	dropped       int64     // number of request dropped due to sending rate control
 	intervalStart time.Time // timestamp of the beginning of the current interval
 
@@ -417,7 +417,6 @@ func (arp *AdaptoRTOProvider) transitionToFailure() {
 // req counter is reset to whatever the inflight was at this moment
 func (arp *AdaptoRTOProvider) resetCounters() {
 	// reset counters
-	arp.carry = arp.inflight()
 	arp.req = 0
 	arp.res = 0
 	arp.failed = 0
@@ -556,26 +555,17 @@ func (arp *AdaptoRTOProvider) inflight() int64 {
 func (arp *AdaptoRTOProvider) hasEnoughSamples() bool {
 	arp.logger.Info("checking for number of samples",
 		"id", arp.id,
-		"resAdjusted", arp.res-arp.carry,
 		"minSamplesRequired", arp.minSamplesRequired,
 		"res", arp.res,
 		"req", arp.req,
-		"carry", arp.carry,
 		"failed", arp.failed,
 		"dropped", arp.dropped,
 	)
-	return arp.failed == 0 || arp.res-arp.carry >= int64(math.Round(arp.minSamplesRequired))
+	return arp.failed == 0 || arp.res >= int64(math.Round(arp.minSamplesRequired))
 }
 
 func (arp *AdaptoRTOProvider) computeFailure() float64 {
-	// account for the carry. use the previous failure rate to ESTIMATE the failed from for the carry
-	resAdjusted := arp.res - arp.carry
-	failedAdjusted := float64(arp.failed)
-	if failedAdjusted != 0 {
-		failedAdjusted -= max(arp.lastFr*float64(arp.carry), 0)
-	}
-
-	fr := failedAdjusted / float64(resAdjusted) // failure rate for current interval
+	fr := float64(arp.failed) / float64(arp.res) // failure rate for current interval
 	arp.lastFr = fr                             // update previous failure rate
 	if arp.sfr == 0 {
 		// first observation of fr
@@ -813,13 +803,9 @@ func (arp *AdaptoRTOProvider) OnInterval() {
 		if !arp.hasEnoughSamples() {
 			arp.logger.Info("not enough samples",
 				"id", arp.id,
-				"resAdjusted", arp.res-arp.carry,
 				"minSamplesRequired", arp.minSamplesRequired,
 				"res", arp.res,
-				"req", arp.req,
-				"carry", arp.carry,
-				"failed", arp.failed,
-				"dropped", arp.dropped,
+				"state", StateAsString(arp.state),
 			)
 			return
 		}
@@ -847,8 +833,9 @@ func (arp *AdaptoRTOProvider) OnInterval() {
 		if !arp.hasEnoughSamples() {
 			arp.logger.Info("not enough samples",
 				"id", arp.id,
-				"resAdjusted", arp.res-arp.carry,
 				"minSamplesRequired", arp.minSamplesRequired,
+				"res", arp.res,
+				"state", StateAsString(arp.state),
 			)
 			return
 		}
@@ -877,8 +864,9 @@ func (arp *AdaptoRTOProvider) OnInterval() {
 		if !arp.hasEnoughSamples() {
 			arp.logger.Info("not enough samples",
 				"id", arp.id,
-				"resAdjusted", arp.res-arp.carry,
 				"minSamplesRequired", arp.minSamplesRequired,
+				"res", arp.res,
+				"state", StateAsString(arp.state),
 			)
 			return
 		}
@@ -915,8 +903,9 @@ func (arp *AdaptoRTOProvider) OnInterval() {
 		if !arp.hasEnoughSamples() {
 			arp.logger.Info("not enough samples",
 				"id", arp.id,
-				"resAdjusted", arp.res-arp.carry,
 				"minSamplesRequired", arp.minSamplesRequired,
+				"res", arp.res,
+				"state", StateAsString(arp.state),
 			)
 			return
 		}

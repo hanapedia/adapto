@@ -28,11 +28,13 @@ const (
 
 	// Tunable parameters
 	// The values set for these constant leaves room for tuning
-	SLO_SAFETY_MARGIN                float64 = 0.5 // safety margin of 0.5 or division by 2
-	MIN_FAILED_SAMPLES               float64 = 1   // minimum failed samples reqruired to compute failure rate
-	LOG2_PACING_GAIN                 int64   = 5   // used as pacing gain factor. 1+ 1 >> LOG2_PACING_GAIN
-	DEFAULT_OVERLOAD_DRAIN_INTERVALS uint64  = 2   // intervals to choke rto after overload.
-	DEFAULT_STARTUP_INTERVALS        uint64  = 4   // intervals to wait for the kMargin to stabilize
+	SLO_SAFETY_MARGIN                            float64 = 0.5 // safety margin of 0.5 or division by 2
+	MIN_FAILED_SAMPLES                           float64 = 1   // minimum failed samples reqruired to compute failure rate
+	LOG2_PACING_GAIN                             int64   = 5   // used as pacing gain factor. 1+ 1 >> LOG2_PACING_GAIN
+	DEFAULT_OVERLOAD_DRAIN_INTERVALS             uint64  = 2   // intervals to choke rto after overload.
+	DEFAULT_STARTUP_INTERVALS                    uint64  = 4   // intervals to wait for the kMargin to stabilize
+	DEFAULT_CAPACITY_INCREMENT_COOLDOWN          uint64  = 6   // intervals to wait for incrementing capacity
+	FAILURE_RECOVERY_CAPACITY_INCREMENT_COOLDOWN uint64  = 1   // intervals to wait for incrementing capacity
 )
 
 type AdaptoRTOProviderInterface interface {
@@ -216,15 +218,17 @@ type AdaptoRTOProvider struct {
 	startupIntervalsRemaining uint64 // counter for the number of startup intervals remaining, decremented when failure rate meets the target.
 
 	// states for overload control
-	overloadThresholdReq            int64                   // number of requests allowed in an interval during overload
-	queueLength                     int64                   // number of requests SCHEDULED & suspended, waiting for their turn
-	sendRateInterval                time.Duration           // pacing interval for controlling sending rate at overloadThresholdReq / interval
-	overloadDrainIntervalsRemaining uint64                  // counter for the number of drain intervals remaining
-	consecutivePacingGains          uint64                  // counter for the number of consecutive pacing gains
-	lastCapacityIncrement           int64                   // record of the last increment to capacity estimate
-	prevSuccRess                    *ring.RingBuffer[int64] // ring buffer for recording previous successful res samples
-	prevReqs                        *ring.RingBuffer[int64] // ring buffer for recording previous reqs samples
-	nextTransimssion                time.Time               // timestap for next transmission when sendRate is enforced
+	overloadThresholdReq               int64                   // number of requests allowed in an interval during overload
+	queueLength                        int64                   // number of requests SCHEDULED & suspended, waiting for their turn
+	sendRateInterval                   time.Duration           // pacing interval for controlling sending rate at overloadThresholdReq / interval
+	overloadDrainIntervalsRemaining    uint64                  // counter for the number of drain intervals remaining
+	consecutivePacingGains             uint64                  // counter for the number of consecutive pacing gains
+	lastCapacityIncrement              int64                   // record of the last increment to capacity estimate
+	capacityIncrementCoolDown          uint64                  // starting value for counter for the number of capacity increment cooldowns
+	capacityIncrementCoolDownRemaining uint64                  // counter for the number of capacity increment cooldowns
+	prevSuccRess                       *ring.RingBuffer[int64] // ring buffer for recording previous successful res samples
+	prevReqs                           *ring.RingBuffer[int64] // ring buffer for recording previous reqs samples
+	nextTransimssion                   time.Time               // timestap for next transmission when sendRate is enforced
 
 	// mutex for synchronizing access to timeout calculation fields
 	mu sync.Mutex
@@ -373,6 +377,10 @@ func (arp *AdaptoRTOProvider) transitionToDrain() {
 func (arp *AdaptoRTOProvider) transitionToOverload() {
 	if arp.state == DRAIN {
 		arp.queueLength = 0
+		arp.consecutivePacingGains = 0
+		arp.lastCapacityIncrement = 0
+		arp.capacityIncrementCoolDown = DEFAULT_CAPACITY_INCREMENT_COOLDOWN
+		arp.capacityIncrementCoolDownRemaining = arp.capacityIncrementCoolDown
 		arp.overloadThresholdReq = max(arp.succeeded(), 1)
 		arp.sendRateInterval = arp.interval / time.Duration(arp.overloadThresholdReq)
 		arp.logger.Info(fmt.Sprintf("transitioning from %s to OVERLOAD", StateAsString(arp.state)),
@@ -385,6 +393,10 @@ func (arp *AdaptoRTOProvider) transitionToOverload() {
 	}
 	if arp.state == FAILURE {
 		arp.queueLength = 0
+		arp.consecutivePacingGains = 0
+		arp.lastCapacityIncrement = 0
+		arp.capacityIncrementCoolDown = FAILURE_RECOVERY_CAPACITY_INCREMENT_COOLDOWN
+		arp.capacityIncrementCoolDownRemaining = arp.capacityIncrementCoolDown
 		// use the last recorded successful request rate as reference
 		arp.overloadThresholdReq = max(arp.prevSuccRess.GetLast(), 1)
 		arp.sendRateInterval = arp.interval / time.Duration(arp.overloadThresholdReq)
@@ -524,6 +536,8 @@ func (arp *AdaptoRTOProvider) updateCapacityEstimateOrDoubleTimeout(fr float64) 
 				arp.overloadThresholdReq,
 			)
 			arp.lastCapacityIncrement = 0
+			// reset cooldown
+			arp.capacityIncrementCoolDownRemaining = arp.capacityIncrementCoolDown
 			arp.logger.Info("still in overload, sending too fast, shrinking pacing",
 				"id", arp.id,
 				"sendRateInterval", arp.sendRateInterval,
@@ -537,7 +551,10 @@ func (arp *AdaptoRTOProvider) updateCapacityEstimateOrDoubleTimeout(fr float64) 
 
 		// handle capacity decrease
 		arp.timeout = arp.doubleTimeout(fr, arp.timeout)
+		arp.lastCapacityIncrement = 0
 		arp.consecutivePacingGains = 0 // reset consecutive gains
+		// reset cooldown
+		arp.capacityIncrementCoolDownRemaining = arp.capacityIncrementCoolDown
 		arp.logger.Info("still in overload, possible capacity decrease, doubling timeout",
 			"id", arp.id,
 			"sendRateInterval", arp.sendRateInterval,
@@ -548,6 +565,21 @@ func (arp *AdaptoRTOProvider) updateCapacityEstimateOrDoubleTimeout(fr float64) 
 		)
 		return
 	}
+
+	if arp.capacityIncrementCoolDown > 0 {
+		arp.capacityIncrementCoolDown--
+		arp.logger.Info("still in overload, capacity recently been increased, cooling down.",
+			"id", arp.id,
+			"sendRateInterval", arp.sendRateInterval,
+			"overloadThresholdReq", arp.overloadThresholdReq,
+			"dropped", arp.dropped,
+			"req", arp.req,
+			"capacityIncrement", arp.lastCapacityIncrement,
+			"capacityIncrementCoolDown", arp.capacityIncrementCoolDown,
+		)
+		return
+	}
+
 	// gain pacing by x1.125 x 2^consecutivePacingGains
 	// this helps faster recovery of pacing from circuit broken state
 	arp.lastCapacityIncrement = max(max(arp.overloadThresholdReq>>LOG2_PACING_GAIN, 1)<<arp.consecutivePacingGains, 1)
